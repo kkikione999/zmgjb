@@ -1,0 +1,403 @@
+<!-- /index.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">             <!-- -->      
+  <title>UAV Controller</title>
+  <meta name="viewport" 
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #f5f5f5;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      box-sizing: border-box;
+    }
+    #top-bar {
+      padding: 8px 12px;
+      background: #ffffff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 14px;
+    }
+    #ws-status {
+      font-weight: bold;
+    }
+    #ws-status.connected { color: #2e7d32; }
+    #ws-status.connecting { color: #f9a825; }
+    #ws-status.disconnected { color: #c62828; }
+
+    #battery {
+      font-size: 13px;
+      color: #555;
+    }
+
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: row;
+      padding: 10px;
+      box-sizing: border-box;
+      gap: 10px;
+    }
+
+    .joystick-container {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .joystick {
+      position: relative;
+      width: 200px;
+      height: 200px;
+      border-radius: 50%;
+      background: #e0e0e0;
+      box-shadow: inset 0 2px 6px rgba(0,0,0,0.2);
+      touch-action: none;
+    }
+
+    .stick {
+      position: absolute;
+      width: 70px;
+      height: 70px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      touch-action: none;
+    }
+
+    #bottom-bar {
+      padding: 8px 10px 12px;
+      background: #ffffff;
+      box-shadow: 0 -1px 4px rgba(0,0,0,0.08);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+    }
+
+    button.ctrl-btn {
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: none;
+      font-size: 13px;
+      font-weight: 500;
+      background: #eeeeee;
+      color: #333;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.05s;
+    }
+    button.ctrl-btn:active {
+      transform: scale(0.96);
+    }
+    button.ctrl-btn.arm {
+      background: #2e7d32;
+      color: #fff;
+    }
+    button.ctrl-btn.disarm {
+      background: #c62828;
+      color: #fff;
+    }
+    button.ctrl-btn.emg {
+      background: #ff1744;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="top-bar">
+    <div>
+      WebSocket: <span id="ws-status" class="disconnected">Disconnected</span>
+    </div>
+    <div id="battery">
+      Battery: -- mV
+      &nbsp;&nbsp;|&nbsp;&nbsp; RTT: <span id="latency">-- ms</span>
+    </div>
+
+  </div>
+
+  <div id="main">
+    <div class="joystick-container">
+      <div id="joy-left" class="joystick">
+        <div class="stick" id="stick-left"></div>
+      </div>
+    </div>
+    <div class="joystick-container">
+      <div id="joy-right" class="joystick">
+        <div class="stick" id="stick-right"></div>
+      </div>
+    </div>
+  </div>
+  // 按键
+  <div id="bottom-bar">
+    <button class="ctrl-btn arm" data-action="arm">ARM</button>
+    <button class="ctrl-btn disarm" data-action="disarm">DISARM</button>
+    <button class="ctrl-btn" data-action="takeoff">Takeoff</button>
+    <button class="ctrl-btn" data-action="land">Land</button>
+    <button class="ctrl-btn emg" data-action="emergency_stop">EMG STOP</button>
+  </div>
+
+  <script>
+    let ws = null;
+    let wsTimer = null;
+
+    // 遥杆归一化值 [-1, 1]
+    let Lx = 0, Ly = 0, Rx = 0, Ry = 0;
+
+    const wsStatus = document.getElementById('ws-status');
+    const batteryEl = document.getElementById('battery');
+    // NEW: 延迟显示元素和变量
+    const latencyEl = document.getElementById('latency');
+    let lastPingSent = 0;
+    let rttMs = null;
+    let pingTimer = null;
+
+    function setWsStatus(state, text) 
+    {
+      wsStatus.classList.remove('connected', 'connecting', 'disconnected');
+      wsStatus.classList.add(state);
+      wsStatus.textContent = text;
+    }
+
+    function connectWS() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+
+      const url = "ws://" + window.location.host + "/ws";
+      console.log("Connecting to", url);
+      setWsStatus('connecting', 'Connecting');
+
+      ws = new WebSocket(url);
+
+      ws.onopen = () => {
+        console.log("WS connected");
+        setWsStatus('connected', 'Connected');
+      };
+
+      ws.onclose = () => {
+        console.log("WS closed");
+        setWsStatus('disconnected', 'Disconnected');
+        ws = null;
+        // 简单自动重连
+        setTimeout(connectWS, 2000);
+      };
+
+      ws.onerror = (e) => {
+        console.log("WS error", e);
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'status') {
+              let mv;
+              if (msg.mv !== undefined) {
+                mv = Number(msg.mv);
+              } else if (msg.adc_raw !== undefined) {
+                mv = Number(msg.adc_raw);
+              }
+              let text = 'Battery: -- mV';
+              if (Number.isFinite(mv)) {
+                text = `Battery: ${mv.toFixed(0)} mV`;
+              }
+              // 保留 RTT 那一部分
+              batteryEl.innerHTML = `${text} &nbsp;&nbsp;|&nbsp;&nbsp; RTT: <span id="latency">${latencyEl.textContent}</span>`;
+          } else if (msg.type === 'ack') {
+            console.log("CMD ack:", msg.action);
+          } else if (msg.type === 'pong') {           // NEW: 处理 pong
+            // 把 t 转成数字并校验
+            const t = Number(msg.t);
+            if (!Number.isFinite(t)) {
+              // t 不合法，直接丢弃
+              return;
+            }
+
+            const now = performance.now();
+            let rtt = now - t;
+
+            // 过滤明显不合理的值：负数或大于 2000ms 的 spike 直接忽略
+            if (rtt < 0 || rtt > 2000) {
+              // console.log('Ignore abnormal RTT:', rtt);
+              return;
+            }
+
+            // 做一个简单的滑动平均，让数字更平滑
+            if (rttMs === null) rttMs = rtt;
+            else rttMs = 0.7 * rttMs + 0.3 * rtt;
+
+            latencyEl.textContent = `${rttMs.toFixed(0)} ms`;
+          }
+        } catch (err) {
+          console.log("WS message parse error", err);
+        }
+      };
+    }
+
+    // 定时发送遥杆数据
+    function startSendLoop() 
+    {
+      if (wsTimer) return;
+      wsTimer = setInterval(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const payload = {
+          type: "rc",
+          Lx, Ly, Rx, Ry
+        };
+        ws.send(JSON.stringify(payload));
+      }, 50); // 50ms发送一次
+    }
+
+    // 发送 ping，附带当前时间戳
+    function sendPing() 
+    {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const now = performance.now();      // 页面运行时间，ms
+      lastPingSent = now;
+      const payload = {
+        type: "ping",
+        t: now
+      };
+      ws.send(JSON.stringify(payload));
+    }
+
+
+    // NEW: 启动 ping 定时器（比如 1 秒一次）
+    function startPingLoop() 
+    {
+      if (pingTimer) return;
+      pingTimer = setInterval(sendPing, 1000);
+    }
+
+    function setupJoystick(joyId, stickId, isLeft) 
+    {
+      const joy = document.getElementById(joyId);
+      const stick = document.getElementById(stickId);
+
+      const rect = () => joy.getBoundingClientRect();
+      const center = () => ({
+        x: rect().left + rect().width / 2,
+        y: rect().top + rect().height / 2
+      });
+      const radius = () => rect().width / 2;
+
+      let active = false;
+      let pointerId = null;
+
+      function updateValues(nx, ny) {
+        // nx, ny: [-1,1]，ny 向上为负，这里取反（上推为正）
+        if (isLeft) {
+          Lx = nx;
+          Ly = -ny;
+        } else {
+          Rx = nx;
+          Ry = -ny;
+        }
+      }
+
+      function resetStick() {
+        stick.style.transform = "translate(-50%, -50%)";
+        updateValues(0, 0);
+      }
+
+      function handleStart(ev) {
+        ev.preventDefault();
+        const t = ev.changedTouches[0];
+        const c = center();
+        const dx = t.clientX - c.x;
+        const dy = t.clientY - c.y;
+        const r = radius();
+        if (Math.sqrt(dx*dx + dy*dy) <= r * 1.1) {
+          active = true;
+          pointerId = t.identifier;
+        }
+      }
+
+      function handleMove(ev) {
+        if (!active) return;
+        for (let i = 0; i < ev.changedTouches.length; i++) {
+          const t = ev.changedTouches[i];
+          if (t.identifier === pointerId) {
+            const c = center();
+            let dx = t.clientX - c.x;
+            let dy = t.clientY - c.y;
+            const r = radius();
+
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist > r) {
+              dx = dx * r / dist;
+              dy = dy * r / dist;
+            }
+
+            const nx = dx / r;
+            const ny = dy / r;
+
+            stick.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+            updateValues(nx, ny);
+          }
+        }
+        ev.preventDefault();
+      }
+
+      function handleEnd(ev) {
+        if (!active) return;
+        for (let i = 0; i < ev.changedTouches.length; i++) {
+          const t = ev.changedTouches[i];
+          if (t.identifier === pointerId) {
+            active = false;
+            pointerId = null;
+            resetStick(); // 松手回中
+          }
+        }
+        ev.preventDefault();
+      }
+
+      joy.addEventListener('touchstart', handleStart, { passive: false });
+      joy.addEventListener('touchmove', handleMove, { passive: false });
+      joy.addEventListener('touchend', handleEnd, { passive: false });
+      joy.addEventListener('touchcancel', handleEnd, { passive: false });
+
+      resetStick();
+    }
+
+    function setupButtons() {
+      document.querySelectorAll('button.ctrl-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const action = btn.getAttribute('data-action');
+          if (!action) return;
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            alert("WebSocket not connected");
+            return;
+          }
+          const payload = {
+            type: "cmd",
+            action: action
+          };
+          ws.send(JSON.stringify(payload));
+        });
+      });
+    }
+
+    window.addEventListener('load', () => {
+      connectWS();
+      startSendLoop();
+      setupJoystick("joy-left", "stick-left", true);   // 左摇杆：Ly->throttle, Lx->yaw
+      setupJoystick("joy-right", "stick-right", false);// 右摇杆：Rx->roll, Ry->pitch
+      setupButtons();
+      startPingLoop();                                 // NEW: 启动 ping loop
+    });
+  </script>
+</body>
+</html>

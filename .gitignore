@@ -1,0 +1,25 @@
+.DS_Store
+
+# Editor settings
+.idea/
+.vscode/
+
+# PlatformIO
+**/.pio/
+**/.pioenvs/
+**/.piolibdeps/
+
+# Generic build outputs
+**/build/
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+
+# Keil temporary files
+*.uvguix.*
+*.uvoptx
+*.bak
+*.tmp
