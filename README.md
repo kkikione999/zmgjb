@@ -1,5 +1,7 @@
 # zmgjb
 
+咱们搞机吧
+
 Embedded project workspace for an STM32F411 + ESP32-C3 hardware platform.
 
 ## Repository Layout
