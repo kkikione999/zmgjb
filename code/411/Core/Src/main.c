@@ -132,6 +132,17 @@ int main(void)
   mahony_ahrs_init(2.0f, 0.01f);    // 初始化Mahony AHRS (Kp=2.0, Ki=0.01) - 优化参数
   motor_all_start();                   //初始化四个电机
 
+#if defined(UART1_SMOKE_TEST) && (UART1_SMOKE_TEST == 1)
+  {
+    static const uint8_t uart1_smoke_msg[] = "UART1 smoke test 460800\r\n";
+    while (1)
+    {
+      HAL_UART_Transmit(&huart1, (uint8_t *)uart1_smoke_msg, sizeof(uart1_smoke_msg) - 1U, 1000);
+      HAL_Delay(500);
+    }
+  }
+#endif
+
   /* USER CODE END 2 */
   /* Init scheduler */
   osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */

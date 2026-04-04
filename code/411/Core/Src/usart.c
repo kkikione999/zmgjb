@@ -438,6 +438,21 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
     }
 }
 
+int _write(int file, char *ptr, int len)
+{
+    (void)file;
+
+    if (ptr == NULL || len <= 0) {
+        return 0;
+    }
+
+    if (HAL_UART_Transmit(&huart1, (uint8_t *)ptr, (uint16_t)len, 1000) != HAL_OK) {
+        return -1;
+    }
+
+    return len;
+}
+
 static int alloc_frame_slot(void) {
     for (int i=0;i<FRAME_POOL;i++) {
         if (((g_frame_in_use>>i)&1)==0) {
