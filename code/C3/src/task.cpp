@@ -23,6 +23,9 @@ QueueHandle_t pid_queue;
 
 // 是否启用 UDP 假数据测试
 #define USE_UDP_FAKE_RC   0    // NEW: 默认为 0，关闭原来的 rcdata.Ry++ 假数据
+#define ENABLE_AUTO_RC_LOOP   0
+#define ENABLE_AUTO_PAUSE_CMD 0
+#define ENABLE_AUTO_DEBUG_PID 0
 
 // 全局变量定义
 extern double_buffer_t g_double_buffer[2];//双缓冲区？
@@ -175,15 +178,6 @@ void Task_init()
         2,  // 优先级与电源任务相同
         NULL);
 
-    // 创建 WebSocket 解析任务
-    xTaskCreate(
-        websocket_task,         
-        "websocket_task",
-        TASK_STACK_SIZE,
-        NULL,
-        2,                       // 建议比普通任务略高一点
-        NULL);
-
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -276,37 +270,35 @@ void stm32_uart_tx_task(void *pvParameters)
     pid_update_msg_t pid_msg;
     uint8_t frame[1+1+1+sizeof(RCData_t)+1+1]; // HEADER+CMD+LEN+DATA+SUM+TAIL
     uint8_t pid_frame[1+1+1+sizeof(AxisPID)+1+1]; // 用于PID参数
-    uint8_t quat_frame[10]; // 用于0x01四元数命令，实际长度6字节
+#if ENABLE_AUTO_PAUSE_CMD
     uint8_t pause_frame[10]; // 用于0x00暂停命令，实际长度6字节
+#endif
     // 预定义的PID参数（用于调试）
+#if ENABLE_AUTO_DEBUG_PID
     static const AxisPID debug_pid[] =
     {
-        // 俯仰轴
         { .kp_angle = 2.0f, .ki_angle = 0.1f, .kd_angle = 0.05f,
           .kp_rate = 1.0f, .ki_rate = 0.05f, .kd_rate = 0.01f },
-        // 横滚轴
         { .kp_angle = 2.2f, .ki_angle = 0.12f, .kd_angle = 0.06f,
           .kp_rate = 1.1f, .ki_rate = 0.06f, .kd_rate = 0.012f },
-        // 偏航轴
         { .kp_angle = 1.8f, .ki_angle = 0.08f, .kd_angle = 0.04f,
           .kp_rate = 0.9f, .ki_rate = 0.04f, .kd_rate = 0.008f }
     };
-    static const uint8_t axis_cmd[] = {0x03, 0x04, 0x05}; // 俯仰, 横滚, 偏航
-    static int pid_send_index = 0;                        //
-
-    // 定时发送控制变量
-    static TickType_t last_quat_send = 0;
-    static TickType_t last_pause_send = 0;
+    static const uint8_t axis_cmd[] = {0x03, 0x04, 0x05};
+    static int pid_send_index = 0;
     static TickType_t last_debug_pid_send = 0;
-    const TickType_t quat_interval = pdMS_TO_TICKS(3000);   // 3秒发送一次0x01
-    const TickType_t pause_interval = pdMS_TO_TICKS(3000);  // 5秒发送一次0x00
-    const TickType_t debug_pid_interval = pdMS_TO_TICKS(2000); // 2秒发送一次调试PID
-
-    // 添加静态变量用于循环发送手柄数据
-     RCData_t last_rc_data = {1.0f, 1.0f, 0.0f, 0.0f}; // 默认中位值
+    const TickType_t debug_pid_interval = pdMS_TO_TICKS(2000);
+#endif
+#if ENABLE_AUTO_PAUSE_CMD
+    static TickType_t last_pause_send = 0;
+    const TickType_t pause_interval = pdMS_TO_TICKS(3000);
+#endif
+#if ENABLE_AUTO_RC_LOOP
+    RCData_t last_rc_data = {1.0f, 1.0f, 0.0f, 0.0f};
     static TickType_t last_rc_loop_send = 0;
-    const TickType_t rc_loop_interval = pdMS_TO_TICKS(100); // 100ms循环发送
-    static float count_RCdata=0;
+    const TickType_t rc_loop_interval = pdMS_TO_TICKS(100);
+    static float count_RCdata = 0;
+#endif
     while (1)
     {
         TickType_t now = xTaskGetTickCount();
@@ -315,8 +307,6 @@ void stm32_uart_tx_task(void *pvParameters)
         if (xQueueReceive(RCdata_queue, &rc_data, 0))
         {
             Serial.println("xQueueReceive rc_data success");
-            // 更新last_rc_data为最新收到的数据
-            last_rc_data = rc_data;
             size_t n = pack_frame_u8(0x02, (uint8_t*)&rc_data, sizeof(rc_data), frame, sizeof(frame));//帧打包:vofa下来得摇杆raw数据-->(0x02,数据,数据长度,帧缓冲区,帧缓冲区大小)
             if (n > 0)
             {
@@ -329,7 +319,8 @@ void stm32_uart_tx_task(void *pvParameters)
             }
         }
 
-        // 循环发送手柄数据（固定间隔）
+        // 循环发送手柄数据（仅调试时启用）
+#if ENABLE_AUTO_RC_LOOP
         if (now - last_rc_loop_send >= rc_loop_interval)
         {
             count_RCdata++;
@@ -348,6 +339,7 @@ void stm32_uart_tx_task(void *pvParameters)
             }
             last_rc_loop_send = now;
         }
+#endif
 
         // 发送PID参数（即时响应）
         if (xQueueReceive(pid_queue, &pid_msg, 0))
@@ -381,7 +373,8 @@ void stm32_uart_tx_task(void *pvParameters)
             }
         }
 
-        // 定时发送0x00暂停命令
+        // 定时发送0x00暂停命令（仅调试时启用）
+#if ENABLE_AUTO_PAUSE_CMD
         if (now - last_pause_send >= pause_interval)
         {
             size_t n = pack_frame_u8(0x00, nullptr, 0, pause_frame, sizeof(pause_frame));
@@ -396,8 +389,10 @@ void stm32_uart_tx_task(void *pvParameters)
             }
             last_pause_send = now;
         }
+#endif
 
-        // 定时发送调试PID参数（保持原有2秒一个轴）
+        // 定时发送调试PID参数（仅调试时启用）
+#if ENABLE_AUTO_DEBUG_PID
         if (now - last_debug_pid_send >= debug_pid_interval)
         {
             uint8_t cmd = axis_cmd[pid_send_index];
@@ -411,6 +406,7 @@ void stm32_uart_tx_task(void *pvParameters)
             pid_send_index = (pid_send_index + 1) % 3;
             last_debug_pid_send = now;
         }
+#endif
         
         // 循环延迟，减少CPU占用
         vTaskDelay(pdMS_TO_TICKS(10)); // 缩短延迟以更灵敏地响应队列

@@ -3,7 +3,9 @@
 ## Backgrand
 - this is a mini drone. the drone is connected to the computer with USB. the drone includes 4 coreless motor and every components below.
 - this computer with a mac M4 chip, is connected with WiFi and a Router which shares the network by it's WiFi: SSID is "whc" and Password is "12345678"
-- lines connection is fine and don't doubt that.
+
+## Rules
+- the pinouts of components connection is absolutely correct and don't doubt that, if something wrong, it must be code rather than drone.
 
 ## Project Structure & Module Organization
 - `code/411`: STM32F411 flight-controller firmware. Core CubeMX/HAL code lives in `Core/`, sensors and board drivers in `Hardware/`, attitude/control logic in `Control/`, PID code in `PID/`, and persistent parameters in `system_param/`.

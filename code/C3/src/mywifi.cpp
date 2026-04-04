@@ -9,8 +9,8 @@
 // const char* ssid = "ESP32";
 // const char* password = "888888888";
 
-const char* ssid = "000666";
- const char* password = "sss000666";
+const char* ssid = "whc";
+const char* password = "12345678";
 // WiFi连接状态
 bool wifiConnected = false;
 unsigned long lastWiFiCheckTime = 0;
@@ -116,6 +116,5 @@ void checkWiFiConnection() {
     }
   }
 }
-
 
 
