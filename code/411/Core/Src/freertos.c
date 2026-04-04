@@ -12,7 +12,6 @@
 #include "IMUsolution.h"
 #include "ICM42688.h"
 #include "QMC5883P.h"
-#include "LPS22HBTR.h"
 #include "AHRS_Mahony.h"
 #include "usart.h"
 #include "dma.h"
@@ -43,14 +42,12 @@ extern uint8_t USART1_DMA_TX_ready;
 // extern ring_queue_t queue_rx;   //不再使用它了
 extern uint8_t dma_rx_buf[DMA_RX_BUF_SIZE];
 extern CommandList cmd_table[CommandList_MAX];
-extern lps22hb_t g_lps;
 /* USER CODE END PTD */
 
 /* USER CODE BEGIN PD */
 //变量声明、函数原型声明
 float pitch, row, yaw;
 uint32_t err_times = 0;
-int32_t lps_value;
 HAL_UART_StateTypeDef uart_status;
 /* USER CODE END PD */
 
@@ -432,10 +429,7 @@ void sensor_task(void *argument)
 	float mag_y_filtered = LowPassFilter_Update(&mag_y_filter, (float)qmc_raw_data.Y);
 	float mag_z_filtered = LowPassFilter_Update(&mag_z_filter, (float)qmc_raw_data.Z);
 	
-	// ========== 4. 读取气压计 ==========
-    LPS22HB_ReadRawPressure(&g_lps, &lps_value);
-    
-    // ========== 5. 打包滤波后的传感器数据 ==========
+	// ========== 4. 打包滤波后的传感器数据 ==========
  
     sensor_data_t sensor_packet = 
 	{
@@ -452,13 +446,13 @@ void sensor_task(void *argument)
 			.Y = (int16_t)mag_y_filtered,
 			.Z = (int16_t)mag_z_filtered
 		},
-        .Pressure = lps_value
+        .Pressure = 0
     };
     
-    // ========== 6. 发送到传感器队列 ==========
+    // ========== 5. 发送到传感器队列 ==========
     osMessageQueuePut(sensorQueueHandle, &sensor_packet, 0, 0);
     
-    // ========== 7. 周期延时 ==========
+    // ========== 6. 周期延时 ==========
     osDelay(18); // 18ms = 55.5Hz更新率
 	printf("sensor_task\r\n");
   }

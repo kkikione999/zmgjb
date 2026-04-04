@@ -10,7 +10,7 @@
 #include <stdint.h>
 
 // ================= Original Definitions =================
-#define ICM42688_ADDRESS 				   					  0x68
+#define ICM42688_ADDRESS 				   					  0x69
 																						 
 /* WHO_AM_I register */                      
 #define ICM42688_REG_WHO_AM_I                 0x75

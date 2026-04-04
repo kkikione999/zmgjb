@@ -805,18 +805,18 @@ void ICM42688_init(void)
 	OS.ACCEL_ODR = ICM42688_ACCEL_ODR_1KHZ;     // 加速度计也提升到1kHz
 	OS.ACCEL_FSR = ICM42688_ACCEL_FS_8G;         // ±8G (保持)
 	
-	//ICM_cfg_PWR();如果先执行ICM_cfg_PWR再执行软件复位就会把原来开启的温度，加速度计等置0
-	ICM_cfg_DRIVE();//先进行软件复位
-	ICM_cfg_DEVICE();
-	
-	HAL_Delay(30);
+	// 先配置驱动能力。当前固件在执行 DEVICE_CONFIG 软复位后会丢失 I2C 应答，
+	// 因此这里保留最小初始化链路，不再主动发软复位。
+	ICM_cfg_DRIVE();
+	HAL_Delay(2);
 	ICM_cfg_PWR();
 	
 	ICM_cfg_Notchfilter(&nff);
 	ICM_cfg_AFFfilter(&aff_accel,&aff_gyro);
 	ICM_User_PATH_ODR_AND_FSR(&OS);
 	
-	ICM42688_CalibrateGyroAndWriteOffset(&OS);
+	// 当前 offset 写回流程会导致后续寄存器页状态异常，先跳过启动阶段写 offset，
+	// 保障 IMU 能稳定完成上电初始化与数据读取。
 	
 	//最后切换成bank0
 	ICM_BANK_SWITCH(ICM42688_BANK_SEL_0);

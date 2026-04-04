@@ -32,7 +32,6 @@
 #include "stdio.h"
 #include "ICM42688.h"
 #include "QMC5883P.h"
-#include "LPS22HBTR.h"
 #include "AHRS_Mahony.h"
 #include "system_params.h"
 /* USER CODE END Includes */
@@ -125,7 +124,6 @@ int main(void)
   MX_TIM3_Init();
   
   /* USER CODE BEGIN 2 */
-  Baro_Init();	                       // 加载flash中的PID参数
   usart2_dma_rx_start();	           // 开启DMA 接收中断
   ICM42688_init();                     // 初始化陀螺仪
   QMC_Init();
