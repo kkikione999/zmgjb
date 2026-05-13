@@ -32,6 +32,7 @@
 #include "stdio.h"
 #include "ICM42688.h"
 #include "QMC5883P.h"
+#include "LPS22HBTR.h"
 #include "AHRS_Mahony.h"
 #include "system_params.h"
 /* USER CODE END Includes */
@@ -40,6 +41,7 @@
 /* USER CODE BEGIN PTD */
 //宏定义、常量、类型定义
 extern UART_HandleTypeDef huart1;
+extern lps22hb_t g_lps;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -125,9 +127,60 @@ int main(void)
   
   /* USER CODE BEGIN 2 */
   usart2_dma_rx_start();	           // 开启DMA 接收中断
+
+  // 读取三个传感器 WHO_AM I 并通过串口输出
+  {
+    uint8_t id;
+    HAL_StatusTypeDef status;
+
+    printf("\r\n===== Sensor WHO_AM_I Check =====\r\n");
+
+    // ICM42688-P (I2C1, addr 0x69)
+    ICM_BANK_SWITCH(ICM42688_BANK_SEL_0);
+    id = ICM42688_Read_WhoAmI();
+    printf("ICM42688-P WHO_AM_I: 0x%02X (expect 0x47) %s\r\n",
+           id, (id == 0x47) ? "[OK]" : "[FAIL]");
+
+    // LPS22HBTR/LPS22HH (SPI3)
+    status = LPS22HB_ReadWhoAmI(&g_lps, &id);
+    if (status == HAL_OK) {
+      printf("LPS22HB   WHO_AM_I: 0x%02X (expect 0xB1/0xB3) %s\r\n",
+             id, (id == 0xB1 || id == 0xB3) ? "[OK]" : "[FAIL]");
+    } else {
+      printf("LPS22HB   WHO_AM_I: SPI read failed!\r\n");
+    }
+
+    // QMC5883P (I2C1, addr 0x2C)
+    if (QMC_ReadChipID(&id) == QMC_OK) {
+      printf("QMC5883P  CHIP_ID:  0x%02X (expect 0x80) %s\r\n",
+             id, (id == 0x80) ? "[OK]" : "[FAIL]");
+    } else {
+      printf("QMC5883P  CHIP_ID:  I2C read failed!\r\n");
+    }
+
+    printf("==================================\r\n\r\n");
+  }
+
   ICM42688_init();                     // 初始化陀螺仪
-  QMC_Init();
+  QMC_Init();                          // 初始化磁力计
+  Baro_Init();                         // 初始化气压计
   mahony_ahrs_init(2.0f, 0.01f);    // 初始化Mahony AHRS (Kp=2.0, Ki=0.01) - 优化参数
+  mahony_set_params(2.0f, 0.01f, 2.0f);  // Kp=2.0, Ki=0.01, Kp_mag=2.0（强磁力计修正）
+  /* USER CODE BEGIN 2 */
+  {
+    QMC5883P_Full_Calibration_t calib = {
+      {34.50f, 445.00f, -12.00f},
+      {
+        {1.1112f, 0.0f, 0.0f},
+        {0.0f, 1.0611f, 0.0f},
+        {0.0f, 0.0f, 0.8638f}
+      },
+      1,
+      1
+    };
+    QMC_Set_Full_Calibration(&calib);
+  }
+  /* USER CODE END 2 */
   motor_all_start();                   //初始化四个电机
 
 #if defined(UART1_SMOKE_TEST) && (UART1_SMOKE_TEST == 1)
