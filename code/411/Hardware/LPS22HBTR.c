@@ -171,7 +171,7 @@ HAL_StatusTypeDef LPS22HB_Init(lps22hb_t *dev,
     /* 芯片在手否？ */
     uint8_t id = 0;
     if (LPS22HB_ReadWhoAmI(dev, &id) != HAL_OK) return HAL_ERROR;
-    if (id != LPS22HB_WHO_AM_I_VAL) return HAL_ERROR; /* 不是目标器件 */
+    if (id != LPS22HB_WHO_AM_I_VAL && id != LPS22HH_WHO_AM_I_VAL) return HAL_ERROR; /* 不是目标器件 */
 
     /* 软件复位并重启 NVM 参数 */
     if (LPS22HB_SoftwareReset(dev) != HAL_OK) return HAL_ERROR;

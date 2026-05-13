@@ -24,7 +24,8 @@
 #define LPS22HB_REG_FIFO_STATUS     0x26
 
 /* ------------ 识别码 ------------ */
-#define LPS22HB_WHO_AM_I_VAL        0xB1  /* datasheet */
+#define LPS22HB_WHO_AM_I_VAL        0xB1  /* LPS22HB datasheet */
+#define LPS22HH_WHO_AM_I_VAL        0xB3  /* LPS22HH */
 
 /* ------------ SPI 指令位（LPS22HB：bit7=1 表示读） ------------ */
 #define LPS22HB_SPI_READ            0x80
