@@ -115,11 +115,8 @@ uint8_t ICM42688_Read_WhoAmI(void)
 	HAL_StatusTypeDef err;
 	err = HAL_I2C_Mem_Read(&ICM_I2C_HANDLE, (ICM42688_ADDRESS<<1), ICM42688_REG_WHO_AM_I, I2C_MEMADD_SIZE_8BIT, &ID, 1, HAL_MAX_DELAY);
 	if(err != HAL_OK)
-		printf("[ERROR] %s:%d: 出错啦！\r\n", __FILE__, __LINE__);
-	if(err == HAL_OK)
-		printf("success\r\n");
+		printf("[ERROR] %s:%d: I2C read failed!\r\n", __FILE__, __LINE__);
 	return ID;
-	
 }
 //BANK 0 
 //打开相关外设单元
@@ -820,5 +817,8 @@ void ICM42688_init(void)
 	
 	//最后切换成bank0
 	ICM_BANK_SWITCH(ICM42688_BANK_SEL_0);
-	
+
+	// 设置分辨率（基于上方配置的 FSR）
+	accel_curr_resolution = 8.0f / 32768.0f;      // ±8G
+	gyro_curr_resolution = 2000.0f / 32768.0f;     // ±2000dps
 }
