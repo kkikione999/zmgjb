@@ -292,6 +292,7 @@ void posture_task(void *argument)
 	float roll, pitch, yaw;  // 欧拉角
 
 	printf("[POSTURE] Task started - AHRS enabled\r\n");
+	mahony_set_sample_period(0.02f);  // 匹配实际 50Hz 调用频率
 
   /* Infinite loop */
   for(;;)
@@ -319,7 +320,7 @@ void posture_task(void *argument)
 			mahony_get_euler(&roll, &pitch, &yaw);
 
 			// 打印姿态角（可选择启用）
-			// printf("R: %.1f P: %.1f Y: %.1f\r\n", roll, pitch, yaw);
+			printf("ATT:%.2f,%.2f,%.2f\r\n", roll, pitch, yaw);
 
 			// ========== 原有代码（已注释，可选择性启用）==========
 			#if 0
@@ -364,28 +365,28 @@ void sensor_task(void *argument)
 	// 						然后通过消息队列去给不同的任务传递数据
 	
 	// ========== 初始化低通滤波器 ==========
-	// 陀螺仪滤波器 (中等滤波, alpha=0.4)
+	// 陀螺仪滤波器 (alpha=0.8, 快速响应)
 	LowPassFilter_t gyro_x_filter, gyro_y_filter, gyro_z_filter;
-	LowPassFilter_Init(&gyro_x_filter, 0.4f);
-	LowPassFilter_Init(&gyro_y_filter, 0.4f);
-	LowPassFilter_Init(&gyro_z_filter, 0.4f);
+	LowPassFilter_Init(&gyro_x_filter, 0.8f);
+	LowPassFilter_Init(&gyro_y_filter, 0.8f);
+	LowPassFilter_Init(&gyro_z_filter, 0.8f);
 	
-	// 加速度计滤波器 (强滤波, alpha=0.15)
+	// 加速度计滤波器 (alpha=0.5, 适中)
 	LowPassFilter_t accel_x_filter, accel_y_filter, accel_z_filter;
-	LowPassFilter_Init(&accel_x_filter, 0.15f);
-	LowPassFilter_Init(&accel_y_filter, 0.15f);
-	LowPassFilter_Init(&accel_z_filter, 0.15f);
+	LowPassFilter_Init(&accel_x_filter, 0.5f);
+	LowPassFilter_Init(&accel_y_filter, 0.5f);
+	LowPassFilter_Init(&accel_z_filter, 0.5f);
 	
-	// 磁力计滤波器 (很强滤波, alpha=0.08)
+	// 磁力计滤波器 (alpha=0.3, 适中)
 	LowPassFilter_t mag_x_filter, mag_y_filter, mag_z_filter;
-	LowPassFilter_Init(&mag_x_filter, 0.08f); 
-	LowPassFilter_Init(&mag_y_filter, 0.08f);
-	LowPassFilter_Init(&mag_z_filter, 0.08f);
+	LowPassFilter_Init(&mag_x_filter, 0.3f);
+	LowPassFilter_Init(&mag_y_filter, 0.3f);
+	LowPassFilter_Init(&mag_z_filter, 0.3f);
 	
 	printf("[SENSOR] 滤波器初始化完成\r\n");
-	printf("[SENSOR] 陀螺仪滤波系数: %.2f\r\n", 0.4f);
-	printf("[SENSOR] 加速度计滤波系数: %.2f\r\n", 0.15f);
-	printf("[SENSOR] 磁力计滤波系数: %.2f\r\n", 0.08f);
+	printf("[SENSOR] 陀螺仪滤波系数: %.2f\r\n", 0.8f);
+	printf("[SENSOR] 加速度计滤波系数: %.2f\r\n", 0.5f);
+	printf("[SENSOR] 磁力计滤波系数: %.2f\r\n", 0.3f);
 	
   for(;;)
   {
@@ -454,7 +455,7 @@ void sensor_task(void *argument)
     
     // ========== 6. 周期延时 ==========
     osDelay(18); // 18ms = 55.5Hz更新率
-	printf("sensor_task\r\n");
+	// printf("sensor_task\r\n");
   }
   /* USER CODE END sensor_task */
 }
