@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Drone Attitude Viewer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;color:#e0e0e0;font-family:'Consolas','Courier New',monospace;overflow:hidden;height:100vh;display:flex;flex-direction:column}
+
+/* Header */
+.header{display:flex;align-items:center;padding:12px 24px;background:#16213e;border-bottom:1px solid #0f3460;gap:16px;flex-shrink:0}
+.header h1{font-size:18px;color:#00d4ff;letter-spacing:2px;white-space:nowrap}
+#btnConnect{padding:8px 20px;border:1px solid #00d4ff;background:transparent;color:#00d4ff;cursor:pointer;font-size:13px;font-family:inherit;border-radius:4px;transition:all .2s}
+#btnConnect:hover{background:#00d4ff;color:#1a1a2e}
+#btnConnect.connected{border-color:#0f0;color:#0f0}
+#btnConnect.connected:hover{background:#0f0;color:#1a1a2e}
+.status{font-size:12px;color:#888}
+.status.ok{color:#0f0}
+.status.err{color:#f44}
+#hzDisplay{margin-left:auto;font-size:12px;color:#555;white-space:nowrap}
+
+/* Main layout */
+.main{display:flex;flex:1;overflow:hidden}
+
+/* 3D drone view */
+.drone-view{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
+.drone-scene{perspective:800px;width:320px;height:320px;position:relative}
+
+/* Drone body */
+.drone{width:100%;height:100%;position:relative;transform-style:preserve-3d;transition:transform 0.06s linear}
+.arm{position:absolute;width:4px;height:260px;background:#555;top:50%;left:50%;transform-origin:center center;border-radius:2px}
+.arm-h{transform:translate(-50%,-50%) rotate(45deg)}
+.arm-v{transform:translate(-50%,-50%) rotate(-45deg)}
+.body-center{position:absolute;width:36px;height:36px;background:#333;border:2px solid #888;top:50%;left:50%;transform:translate(-50%,-50%);border-radius:4px;z-index:2}
+.motor{position:absolute;width:28px;height:28px;border-radius:50%;top:50%;left:50%;z-index:3;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:bold}
+.motor::after{content:'';position:absolute;width:40px;height:40px;border-radius:50%;border:1px dashed rgba(255,255,255,0.15);animation:spin 0.3s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Front-right: red */
+.motor-fr{transform:translate(calc(-50% + 92px),calc(-50% - 92px)) rotate(45deg);background:rgba(255,60,60,0.85);border:2px solid #f44;color:#fff}
+/* Front-left: green */
+.motor-fl{transform:translate(calc(-50% - 92px),calc(-50% - 92px)) rotate(-45deg);background:rgba(60,255,60,0.85);border:2px solid #0f0;color:#000}
+/* Back-right: yellow */
+.motor-br{transform:translate(calc(-50% + 92px),calc(-50% + 92px)) rotate(-45deg);background:rgba(255,255,60,0.85);border:2px solid #ff0;color:#000}
+/* Back-left: blue */
+.motor-bl{transform:translate(calc(-50% - 92px),calc(-50% + 92px)) rotate(45deg);background:rgba(60,120,255,0.85);border:2px solid #48f;color:#fff}
+
+.dir-label{position:absolute;font-size:11px;font-weight:bold;z-index:4}
+.dir-front{top:4%;left:50%;transform:translateX(-50%);color:#f44}
+.dir-back{bottom:4%;left:50%;transform:translateX(-50%);color:#48f}
+.dir-left{left:4%;top:50%;transform:translateY(-50%);color:#0f0}
+.dir-right{right:4%;top:50%;transform:translateY(-50%);color:#ff0}
+
+/* Data panel */
+.data-panel{width:280px;padding:20px;background:#16213e;border-left:1px solid #0f3460;display:flex;flex-direction:column;gap:20px;overflow-y:auto;flex-shrink:0}
+.axis-block{display:flex;flex-direction:column;gap:6px}
+.axis-label{font-size:11px;color:#888;letter-spacing:1px}
+.axis-value{font-size:32px;font-weight:bold;letter-spacing:1px;min-height:40px}
+.axis-value.pos{color:#0f0}
+.axis-value.neg{color:#f44}
+.axis-value.zero{color:#888}
+.bar-track{width:100%;height:8px;background:#0f3460;border-radius:4px;position:relative;overflow:hidden}
+.bar-fill{height:100%;border-radius:4px;position:absolute;top:0;transition:left 0.06s,width 0.06s}
+.bar-center{position:absolute;width:2px;height:100%;background:#555;left:50%;top:0;z-index:1}
+
+/* Bottom: compass */
+.bottom-bar{height:220px;display:flex;align-items:center;justify-content:center;gap:40px;background:#16213e;border-top:1px solid #0f3460;flex-shrink:0;padding:10px}
+.compass-container{display:flex;flex-direction:column;align-items:center;gap:8px}
+.compass-container h3{font-size:12px;color:#888;letter-spacing:1px}
+.compass{width:180px;height:180px;border-radius:50%;border:2px solid #0f3460;position:relative;background:radial-gradient(circle,#1a1a2e 60%,#16213e)}
+.compass-mark{position:absolute;font-size:10px;font-weight:bold;color:#555}
+.compass-n{top:6px;left:50%;transform:translateX(-50%);color:#f44 !important;font-size:12px}
+.compass-s{bottom:6px;left:50%;transform:translateX(-50%)}
+.compass-e{right:6px;top:50%;transform:translateY(-50%)}
+.compass-w{left:6px;top:50%;transform:translateY(-50%)}
+.compass-tick{position:absolute;width:1px;height:10px;background:#333;top:0;left:50%;transform-origin:0 90px}
+.compass-needle{position:absolute;top:50%;left:50%;width:4px;height:80px;transform-origin:2px 0;transform:translate(-50%,0) rotate(0deg);transition:transform 0.06s linear}
+.needle-n{width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:60px solid #f44;position:absolute;top:0;left:50%;transform:translateX(-50%)}
+.needle-s{width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:40px solid #48f;position:absolute;top:0;left:50%;transform:translateX(-50%)}
+.needle-dot{width:10px;height:10px;border-radius:50%;background:#fff;position:absolute;top:-5px;left:50%;transform:translateX(-50%);z-index:2}
+.yaw-value-display{font-size:28px;font-weight:bold;color:#00d4ff;text-align:center}
+
+/* Bottom info */
+.raw-info{font-size:11px;color:#444;max-width:300px;line-height:1.6}
+.raw-info span{color:#666}
+
+/* No support banner */
+.no-serial{display:none;padding:16px;background:#f44;color:#1a1a2e;text-align:center;font-weight:bold;font-size:14px}
+</style>
+</head>
+<body>
+
+<div class="no-serial" id="noSerial">Your browser does not support Web Serial API. Please use Chrome or Edge.</div>
+
+<div class="header">
+  <h1>DRONE ATTITUDE</h1>
+  <button id="btnConnect">Connect Serial</button>
+  <span class="status" id="statusText">Disconnected</span>
+  <span id="hzDisplay">0 Hz</span>
+</div>
+
+<div class="main">
+  <div class="drone-view">
+    <div class="drone-scene">
+      <div class="drone" id="drone3d">
+        <div class="arm arm-h"></div>
+        <div class="arm arm-v"></div>
+        <div class="body-center"></div>
+        <div class="motor motor-fr">FR</div>
+        <div class="motor motor-fl">FL</div>
+        <div class="motor motor-br">BR</div>
+        <div class="motor motor-bl">BL</div>
+        <div class="dir-label dir-front">FWD</div>
+        <div class="dir-label dir-back">AFT</div>
+        <div class="dir-label dir-left">L</div>
+        <div class="dir-label dir-right">R</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="data-panel">
+    <div class="axis-block">
+      <div class="axis-label">ROLL</div>
+      <div class="axis-value zero" id="rollVal">0.00</div>
+      <div class="bar-track">
+        <div class="bar-center"></div>
+        <div class="bar-fill" id="rollBar"></div>
+      </div>
+    </div>
+    <div class="axis-block">
+      <div class="axis-label">PITCH</div>
+      <div class="axis-value zero" id="pitchVal">0.00</div>
+      <div class="bar-track">
+        <div class="bar-center"></div>
+        <div class="bar-fill" id="pitchBar"></div>
+      </div>
+    </div>
+    <div class="axis-block">
+      <div class="axis-label">YAW</div>
+      <div class="axis-value zero" id="yawVal">0.00</div>
+      <div class="bar-track">
+        <div class="bar-center"></div>
+        <div class="bar-fill" id="yawBar"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="bottom-bar">
+  <div class="compass-container">
+    <h3>YAW COMPASS</h3>
+    <div class="compass" id="compass">
+      <span class="compass-mark compass-n">N</span>
+      <span class="compass-mark compass-s">S</span>
+      <span class="compass-mark compass-e">E</span>
+      <span class="compass-mark compass-w">W</span>
+      <div class="compass-needle" id="compassNeedle">
+        <div class="needle-n"></div>
+        <div class="needle-s"></div>
+        <div class="needle-dot"></div>
+      </div>
+    </div>
+    <div class="yaw-value-display" id="yawCompass">0.0&deg;</div>
+  </div>
+  <div class="raw-info">
+    <div>Format: <span>ATT:roll,pitch,yaw</span></div>
+    <div>Baud: <span>460800</span></div>
+    <div>Lines: <span id="lineCount">0</span></div>
+    <div>Last: <span id="lastLine">---</span></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  // Check Web Serial support
+  if (!('serial' in navigator)) {
+    document.getElementById('noSerial').style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('btnConnect');
+  const statusEl = document.getElementById('statusText');
+  const hzEl = document.getElementById('hzDisplay');
+  const drone3d = document.getElementById('drone3d');
+  const rollValEl = document.getElementById('rollVal');
+  const pitchValEl = document.getElementById('pitchVal');
+  const yawValEl = document.getElementById('yawVal');
+  const rollBarEl = document.getElementById('rollBar');
+  const pitchBarEl = document.getElementById('pitchBar');
+  const yawBarEl = document.getElementById('yawBar');
+  const needleEl = document.getElementById('compassNeedle');
+  const yawCompassEl = document.getElementById('yawCompass');
+  const lineCountEl = document.getElementById('lineCount');
+  const lastLineEl = document.getElementById('lastLine');
+
+  // State
+  let roll = 0, pitch = 0, yaw = 0;
+  let displayRoll = 0, displayPitch = 0, displayYaw = 0;
+  let connected = false;
+  let port = null;
+  let reader = null;
+  let lineCount = 0;
+
+  // Hz counter
+  let frameCount = 0;
+  let lastHzTime = performance.now();
+
+  // Click connect
+  btn.addEventListener('click', async () => {
+    if (connected) {
+      disconnect();
+    } else {
+      await connect();
+    }
+  });
+
+  async function connect() {
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 460800 });
+      connected = true;
+      btn.textContent = 'Disconnect';
+      btn.classList.add('connected');
+      statusEl.textContent = 'Connected';
+      statusEl.className = 'status ok';
+      readLoop();
+    } catch (e) {
+      statusEl.textContent = 'Error: ' + e.message;
+      statusEl.className = 'status err';
+    }
+  }
+
+  async function disconnect() {
+    connected = false;
+    try {
+      if (reader) {
+        await reader.cancel();
+        reader = null;
+      }
+      if (port) {
+        await port.close();
+        port = null;
+      }
+    } catch (e) { /* ignore */ }
+    btn.textContent = 'Connect Serial';
+    btn.classList.remove('connected');
+    statusEl.textContent = 'Disconnected';
+    statusEl.className = 'status';
+  }
+
+  async function readLoop() {
+    const decoder = new TextDecoderStream();
+    const readableStreamClosed = port.readable.pipeTo(decoder.writable);
+    reader = decoder.readable.getReader();
+    let buffer = '';
+
+    try {
+      while (connected) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+
+        // Process complete lines
+        let lines = buffer.split(/[\r\n]+/);
+        // Keep the last incomplete chunk in the buffer
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          lineCount++;
+          lineCountEl.textContent = lineCount;
+          lastLineEl.textContent = trimmed.length > 40 ? trimmed.substring(0, 40) + '...' : trimmed;
+
+          if (trimmed.startsWith('ATT:')) {
+            parseAtt(trimmed.substring(4));
+          }
+        }
+      }
+    } catch (e) {
+      if (connected) {
+        statusEl.textContent = 'Read error: ' + e.message;
+        statusEl.className = 'status err';
+      }
+    } finally {
+      reader.releaseLock();
+      reader = null;
+      try { await readableStreamClosed.catch(() => {}); } catch (e) {}
+      if (connected) {
+        // Unexpected close, try to clean up
+        disconnect();
+      }
+    }
+  }
+
+  function parseAtt(data) {
+    const parts = data.split(',');
+    if (parts.length !== 3) return;
+    const r = parseFloat(parts[0]);
+    const p = parseFloat(parts[1]);
+    const y = parseFloat(parts[2]);
+    if (isNaN(r) || isNaN(p) || isNaN(y)) return;
+
+    roll = r;
+    pitch = p;
+    yaw = y;
+    frameCount++;
+  }
+
+  // Render loop
+  function render() {
+    // Smooth interpolation
+    const lerp = 0.3;
+    displayRoll += (roll - displayRoll) * lerp;
+    displayPitch += (pitch - displayPitch) * lerp;
+    displayYaw += (yaw - displayYaw) * lerp;
+
+    // 3D drone rotation: pitch -> rotateX, roll -> rotateZ (inverted)
+    drone3d.style.transform =
+      'perspective(800px) rotateX(' + displayPitch.toFixed(2) + 'deg) rotateZ(' + (-displayRoll).toFixed(2) + 'deg)';
+
+    // Data panel
+    updateAxis('roll', displayRoll, rollValEl, rollBarEl, 180);
+    updateAxis('pitch', displayPitch, pitchValEl, pitchBarEl, 90);
+    updateAxis('yaw', displayYaw, yawValEl, yawBarEl, 180);
+
+    // Compass needle: yaw rotates the needle
+    needleEl.style.transform = 'translate(-50%, 0) rotate(' + displayYaw.toFixed(2) + 'deg)';
+    yawCompassEl.textContent = displayYaw.toFixed(1) + '°';
+
+    // Hz
+    const now = performance.now();
+    if (now - lastHzTime >= 1000) {
+      hzEl.textContent = frameCount + ' Hz';
+      frameCount = 0;
+      lastHzTime = now;
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  function updateAxis(name, val, valEl, barEl, maxRange) {
+    const v = val.toFixed(2);
+    valEl.textContent = (val >= 0 ? '+' : '') + v;
+    valEl.className = 'axis-value ' + (Math.abs(val) < 0.5 ? 'zero' : (val >= 0 ? 'pos' : 'neg'));
+
+    // Bar: center is 0, fills left or right
+    const pct = Math.min(Math.abs(val) / maxRange, 1) * 50; // 0..50%
+    if (val >= 0) {
+      barEl.style.left = '50%';
+      barEl.style.width = pct + '%';
+      barEl.style.background = '#0f0';
+    } else {
+      barEl.style.left = (50 - pct) + '%';
+      barEl.style.width = pct + '%';
+      barEl.style.background = '#f44';
+    }
+  }
+
+  // Start render loop
+  requestAnimationFrame(render);
+})();
+</script>
+</body>
+</html>
