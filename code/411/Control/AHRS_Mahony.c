@@ -38,8 +38,8 @@ static sensor_check_data_t s_sensor_data = {0};
 
 static coordinate_transform_t s_coord_transform = 
 {
-    .acc_x_sign = -1, .acc_y_sign = -1, .acc_z_sign = 1,      // 
-    .gyro_x_sign = -1, .gyro_y_sign = -1, .gyro_z_sign = -1,    // 
+    .acc_x_sign = -1, .acc_y_sign = -1, .acc_z_sign = 1,      //
+    .gyro_x_sign = -1, .gyro_y_sign = -1, .gyro_z_sign = -1,    //
     .mag_x_sign = -1, .mag_y_sign = 1, .mag_z_sign = -1,        // 
     .acc_axis_map = {1, 0, 2},   
     .gyro_axis_map = {1, 0, 2},  // 机体X←-IMU.Y, 机体Y←IMU.X, 机体Z←IMU.Z
@@ -118,12 +118,12 @@ static inline void quaternion_to_euler(float q0, float q1, float q2, float q3,
     float cosr_cosp = 1.0f - 2.0f * (q1 * q1 + q2 * q2);
     *roll = atan2f(sinr_cosp, cosr_cosp) * RAD2DEG;
 
-    // Pitch (y-axis rotation)
+    // Pitch (y-axis rotation) — 取反以匹配航空惯例（抬头为正）
     float sinp = 2.0f * (q0 * q2 - q3 * q1);
     if (fabsf(sinp) >= 1.0f)
-        *pitch = copysignf(1.5707963267948966f, sinp) * RAD2DEG;
+        *pitch = -copysignf(1.5707963267948966f, sinp) * RAD2DEG;
     else
-        *pitch = asinf(sinp) * RAD2DEG;
+        *pitch = -asinf(sinp) * RAD2DEG;
 
     // Yaw (z-axis rotation)
     float siny_cosp = 2.0f * (q0 * q3 + q1 * q2);
@@ -352,6 +352,13 @@ void mahony_ahrs_reset(void)
     integral_fbz = 0.0f;
     
     memset(&s_sensor_data, 0, sizeof(s_sensor_data));
+}
+
+void mahony_set_sample_period(float period_sec)
+{
+    if (period_sec > 0.0f) {
+        s_sample_period = period_sec;
+    }
 }
 
 void mahony_set_debug_stage(AHRS_Debug_Stage_t stage)

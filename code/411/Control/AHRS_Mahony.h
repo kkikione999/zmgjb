@@ -95,5 +95,7 @@ void mahony_get_sensor_check_data(sensor_check_data_t *data);
 /** 打印调试信息（需要实现printf） */
 void mahony_print_debug_info(void);
 
+void mahony_set_sample_period(float period_sec);
+
 #endif
 
