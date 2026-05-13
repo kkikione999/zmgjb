@@ -6,9 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/auto-build.sh",
+            "command": "/Users/ll/fly/zmgjb/code/.claude/hooks/auto-build.sh",
             "timeout": 120,
-            "async": true
+            "async": false
           }
         ]
       }
