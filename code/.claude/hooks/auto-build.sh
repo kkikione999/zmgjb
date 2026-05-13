@@ -1,48 +1,40 @@
 #!/bin/bash
-# =============================================================
-# auto-build.sh — PostToolUse Hook: 文件编辑后自动触发 PlatformIO 构建
-# =============================================================
+# auto-build.sh — PostToolUse Hook: 文件编辑后自动构建并回传结果
 #
-# 触发条件: Claude Code 通过 Edit 或 Write 工具修改文件后
-# 输入格式: JSON (stdin)，由 Claude Code 自动传入，包含:
-#   {
-#     "tool_input": {
-#       "file_path": "被编辑文件的绝对路径"
-#     },
-#     "tool_name": "Edit 或 Write",
-#     "hook_event_name": "PostToolUse",
-#     ...
-#   }
-#
-# 路径匹配规则:
-#   - 路径包含 /C3/   → 执行 ESP32 构建 (cd C3 && pio run)
-#   - 路径包含 /411/  → 执行 STM32 构建 (cd 411 && pio run)
-#   - 其他路径        → 不触发构建，静默退出
-#
-# 配置位置: .claude/settings.json (项目级，可提交到 git)
-# =============================================================
+# 输入: JSON (stdin), 由 Claude Code 传入
+# 输出: JSON (stdout), 通过 additionalContext 让 Claude 看到构建结果
 
-# 从 stdin 读取 Claude Code 传入的 JSON
 INPUT=$(cat)
-
-# 提取被编辑文件的路径 (.tool_input.file_path)
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
-
-# 如果没有文件路径（例如非文件操作），直接跳过
 [ -z "$FILE_PATH" ] && exit 0
 
-# 根据文件路径判断目标构建
+BUILD_DIR=""
+TARGET=""
 case "$FILE_PATH" in
-  */C3/*|*/C3)
-    # ESP32-C3 文件变更 → 触发 ESP32 构建
-    echo "[HOOK] ESP32 文件变更: $FILE_PATH" >&2
-    cd /Users/ll/fly/zmgjb/code/C3 && pio run 2>&1 | tail -5 >&2
-    ;;
-  */411/*|*/411)
-    # STM32F411 文件变更 → 触发 STM32 构建
-    echo "[HOOK] STM32 文件变更: $FILE_PATH" >&2
-    cd /Users/ll/fly/zmgjb/code/411 && pio run 2>&1 | tail -5 >&2
-    ;;
+  */C3/*|*/C3) BUILD_DIR="/Users/ll/fly/zmgjb/code/C3"; TARGET="ESP32" ;;
+  */411/*|*/411) BUILD_DIR="/Users/ll/fly/zmgjb/code/411"; TARGET="STM32" ;;
 esac
+
+[ -z "$BUILD_DIR" ] && exit 0
+
+# 执行构建，捕获完整输出
+BUILD_OUTPUT=$(cd "$BUILD_DIR" && pio run 2>&1)
+BUILD_EXIT=$?
+
+# 提取关键信息: 最后5行，用 jq 安全转义为 JSON 字符串
+TAIL=$(echo "$BUILD_OUTPUT" | tail -5)
+FILENAME="${FILE_PATH##*/}"
+
+if [ $BUILD_EXIT -eq 0 ]; then
+  STATUS="SUCCESS"
+else
+  STATUS="FAILED"
+fi
+
+MSG="[auto-build] $TARGET $STATUS after editing $FILENAME
+$TAIL"
+
+# 用 jq 确保输出合法 JSON
+jq -n --arg ctx "$MSG" '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":$ctx}}'
 
 exit 0
