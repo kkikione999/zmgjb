@@ -35,3 +35,90 @@ void axisPID_to_bank_slot(float *slot, const AxisPID *pid)
     slot[PID_IDX_KI_RATE ] = pid->ki_rate;
     slot[PID_IDX_KD_RATE ] = pid->kd_rate;
 }
+
+float PID_Calculate(PID_State_t *s,
+                    float kp, float ki, float kd,
+                    float setpoint, float measurement,
+                    float dt,
+                    float out_min, float out_max,
+                    float d_alpha)
+{
+    float error = setpoint - measurement;
+
+    // P 项
+    float p_term = kp * error;
+
+    // I 项（带 anti-windup）
+    s->integral += error * dt;
+    float i_term = ki * s->integral;
+
+    // D 项（对 measurement 微分，避免 setpoint 突变尖峰）
+    float raw_derivative = -(measurement - s->prev_error) / dt;
+    // 一阶低通滤波
+    float filtered_derivative = d_alpha * raw_derivative + (1.0f - d_alpha) * s->prev_derivative;
+    s->prev_error = measurement;
+    s->prev_derivative = filtered_derivative;
+    float d_term = kd * filtered_derivative;
+
+    // 计算输出
+    float output = p_term + i_term + d_term;
+
+    // Anti-windup：超限时截断积分
+    if (output > out_max) {
+        output = out_max;
+        if (ki > 0.0f) s->integral -= error * dt;
+    } else if (output < out_min) {
+        output = out_min;
+        if (ki > 0.0f) s->integral -= error * dt;
+    }
+
+    s->output = output;
+    return output;
+}
+
+float PID_Cascaded(CascadedState_t *cs,
+                   const AxisPID *params,
+                   float angle_sp, float angle_meas, float rate_meas,
+                   float dt,
+                   float rate_out_min, float rate_out_max)
+{
+    // 外环（角度环）：输出作为内环的 setpoint
+    // 角速度范围限制为 ±500 deg/s
+    float rate_sp = PID_Calculate(&cs->angle,
+                                   params->kp_angle, params->ki_angle, params->kd_angle,
+                                   angle_sp, angle_meas,
+                                   dt,
+                                   -500.0f, 500.0f,
+                                   0.5f);
+
+    // 内环（角速度环）：输出作为电机校正量
+    float output = PID_Calculate(&cs->rate,
+                                  params->kp_rate, params->ki_rate, params->kd_rate,
+                                  rate_sp, rate_meas,
+                                  dt,
+                                  rate_out_min, rate_out_max,
+                                  0.5f);
+
+    return output;
+}
+
+void PID_State_Reset(PID_State_t *s)
+{
+    s->integral = 0.0f;
+    s->prev_error = 0.0f;
+    s->prev_derivative = 0.0f;
+    s->output = 0.0f;
+}
+
+void CascadedState_Reset(CascadedState_t *cs)
+{
+    PID_State_Reset(&cs->angle);
+    PID_State_Reset(&cs->rate);
+}
+
+void AxisCascadedState_Reset(AxisCascadedState_t *state)
+{
+    CascadedState_Reset(&state->roll);
+    CascadedState_Reset(&state->pitch);
+    CascadedState_Reset(&state->yaw);
+}

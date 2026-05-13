@@ -55,13 +55,17 @@ HAL_UART_StateTypeDef uart_status;
 /* USER CODE BEGIN PM */
 #define QUICK_TEST 0
 #define PWM_MIN   0
-#define PWM_MAX   80 //根据真实PWM周期改这个范围（比如ARR=1000/2000等）1000-》80
+#define PWM_MAX   999 //根据真实PWM周期改这个范围（ARR=999, 0-999全量程）
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 ICM42688_Raw_Data_t icm_raw_data;
 QMC5883P_Raw_Data_t qmc_raw_data;
+// PID 闭环状态
+attitude_data_t g_attitude_data = {0};
+volatile attitude_data_t g_attitude = {0};
+AxisCascadedState_t g_pid_state = {0};
 /* USER CODE END Variables */
 /* Definitions for POSTURE */
 /* osThreadAttr_t 结构体和 osPriority_t 枚举属于 CMSIS-RTOS2 标准接口 */
@@ -166,6 +170,8 @@ static inline uint16_t pwm_from_01(float t01)
 void MX_FREERTOS_Init(void) 
 {
   /* USER CODE BEGIN Init */
+  SystemParams_Init();
+  PID_LoadFromParams();
   /* USER CODE END Init */
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
@@ -204,7 +210,7 @@ void MX_FREERTOS_Init(void)
 //  ESP32_TXHandle = osThreadNew(esp32_tx_task, NULL, &ESP32_TX_attributes);
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
- // PID_UpdateHandle = osThreadNew(pid_update_task, NULL, &PID_Update_attributes);//赋值，赋一个世纪的直
+  PID_UpdateHandle = osThreadNew(pid_update_task, NULL, &PID_Update_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -319,8 +325,22 @@ void posture_task(void *argument)
 			// 获取欧拉角
 			mahony_get_euler(&roll, &pitch, &yaw);
 
+			// 写入全局姿态数据供 PID 控制环使用
+			sensor_check_data_t check;
+			mahony_get_sensor_check_data(&check);
+			g_attitude_data.euler[0] = roll;
+			g_attitude_data.euler[1] = pitch;
+			g_attitude_data.euler[2] = yaw;
+			g_attitude_data.gyro_dps[0] = check.gyro_dps[0];  // roll 轴
+			g_attitude_data.gyro_dps[1] = check.gyro_dps[1];  // pitch 轴
+			g_attitude_data.gyro_dps[2] = check.gyro_dps[2];  // yaw 轴
+			// 原子更新 volatile 全局变量
+			__disable_irq();
+			g_attitude = g_attitude_data;
+			__enable_irq();
+
 			// 打印姿态角（可选择启用）
-			printf("ATT:%.2f,%.2f,%.2f\r\n", roll, pitch, yaw);
+			// printf("ATT:%.2f,%.2f,%.2f\r\n", roll, pitch, yaw); // 电机测试期间临时关闭
 
 			// ========== 原有代码（已注释，可选择性启用）==========
 			#if 0
@@ -627,50 +647,91 @@ void maneuver_task(void *argument)
   rc_cmd_t rc = {0};
   uint32_t last_rc_tick = 0;
 
+  // PID 控制参数
+  #define MAX_ANGLE   25.0f    // 摇杆满偏对应最大倾斜角（度）
+  #define MAX_RATE    200.0f   // yaw 摇杆满偏对应最大偏航速率（度/秒）
+  #define PID_DT      0.02f   // 50Hz 控制周期
+  #define PID_RATE_OUT_MAX 300.0f  // 角速度环输出上限
+
   for (;;)
   {
-    // 1) 拉最新遥控（阻塞最多 1ms）
+    // 1) 拉最新遥控
     rc_cmd_t tmp;
     if (osMessageQueueGet(rcCmdQueueHandle, &tmp, NULL, 1) == osOK) {
       rc = tmp;
       last_rc_tick = rc.tick;
     }
 
-    // 2) 拉最新传感器（非阻塞：有就更新，没有就用上次）
-    // 3) 遥控失联保护：200ms 没新指令，就把油门降到0（或怠速）
-    uint32_t now = osKernelGetTickCount();
-    if ((now - last_rc_tick) > 200) {
+    // 2) 遥控失联保护
+    uint32_t now = HAL_GetTick();
+    if ((now - last_rc_tick) > 200) {  // 恢复200ms超时
       rc.throttle = 0.0f;
       rc.roll = rc.pitch = rc.yaw = 0.0f;
     }
 
-    // 4) 融合/机动逻辑（先给一个最简单版本）
-    // 这里你可以用 s.icm.gyro_x/y/z、姿态角 pitch/roll/yaw 做闭环
-    // 先用“指令直通”做混控，后面再叠加姿态稳定
-    float T = rc.throttle;            // 0~1
-    float R = rc.roll * 0.2f;         // 混控系数先小一点，避免暴力
-    float P = rc.pitch * 0.2f;
-    float Y = rc.yaw * 0.2f;
+    // 3) 电机测试模式下跳过 PID 控制
+    extern volatile uint8_t g_motor_test_active;
+    if (g_motor_test_active) {
+        osDelay(20);
+        continue;
+    }
 
-    // 5) X型混控（示例：M1前左 M2前右 M3后右 M4后左）
-    float m1 = T + P + R + Y;
-    float m2 = T + P - R - Y;
-    float m3 = T - P - R + Y;
-    float m4 = T - P + R - Y;
+    // 4) 读取当前姿态（原子拷贝）
+    attitude_data_t att;
+    __disable_irq();
+    att = g_attitude;
+    __enable_irq();
 
-    // 限幅到 [0,1]
-    m1 = (m1 < 0) ? 0 : (m1 > 1 ? 1 : m1);
-    m2 = (m2 < 0) ? 0 : (m2 > 1 ? 1 : m2);
-    m3 = (m3 < 0) ? 0 : (m3 > 1 ? 1 : m3);
-    m4 = (m4 < 0) ? 0 : (m4 > 1 ? 1 : m4);
+    // 5) RC 命令映射为目标值
+    float roll_angle_sp  = rc.roll  * MAX_ANGLE;   // ±25°
+    float pitch_angle_sp = rc.pitch * MAX_ANGLE;   // ±25°
+    float yaw_rate_sp    = rc.yaw   * MAX_RATE;    // ±200°/s
 
-    // 6) 输出PWM（把TIM/通道改成你实际四电机）
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, pwm_from_01(m1));
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pwm_from_01(m2));
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_from_01(m3));
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pwm_from_01(m4));
+    // 6) 级联 PID 计算
+    // Roll: 角度外环 → 角速度内环
+    float roll_corr = PID_Cascaded(&g_pid_state.roll,
+                                    &g_runtime_pid.roll,
+                                    roll_angle_sp, att.euler[0], att.gyro_dps[0],
+                                    PID_DT, -PID_RATE_OUT_MAX, PID_RATE_OUT_MAX);
 
-    // 7) 控制周期：5ms = 200Hz（可按你系统调）
+    // Pitch: 角度外环 → 角速度内环
+    float pitch_corr = PID_Cascaded(&g_pid_state.pitch,
+                                     &g_runtime_pid.pitch,
+                                     pitch_angle_sp, att.euler[1], att.gyro_dps[1],
+                                     PID_DT, -PID_RATE_OUT_MAX, PID_RATE_OUT_MAX);
+
+    // Yaw: 仅角速度环（yaw 不做角度保持）
+    float yaw_corr = PID_Calculate(&g_pid_state.yaw.rate,
+                                    g_runtime_pid.yaw.kp_rate,
+                                    g_runtime_pid.yaw.ki_rate,
+                                    g_runtime_pid.yaw.kd_rate,
+                                    yaw_rate_sp, att.gyro_dps[2],
+                                    PID_DT,
+                                    -PID_RATE_OUT_MAX, PID_RATE_OUT_MAX,
+                                    0.5f);
+
+    // 7) 油门基础值
+    float T = rc.throttle * PWM_MAX;
+
+    // 8) X 型混控
+    float m1 = T + pitch_corr + roll_corr + yaw_corr;  // 前左
+    float m2 = T + pitch_corr - roll_corr - yaw_corr;  // 前右
+    float m3 = T - pitch_corr - roll_corr + yaw_corr;  // 后右
+    float m4 = T - pitch_corr + roll_corr - yaw_corr;  // 后左
+
+    // 9) 限幅
+    m1 = (m1 < 0) ? 0 : (m1 > PWM_MAX ? PWM_MAX : m1);
+    m2 = (m2 < 0) ? 0 : (m2 > PWM_MAX ? PWM_MAX : m2);
+    m3 = (m3 < 0) ? 0 : (m3 > PWM_MAX ? PWM_MAX : m3);
+    m4 = (m4 < 0) ? 0 : (m4 > PWM_MAX ? PWM_MAX : m4);
+
+    // 10) 输出 PWM
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, (uint16_t)m1);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, (uint16_t)m2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)m3);
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, (uint16_t)m4);
+
+    // 11) 控制周期 50Hz
     osDelay(20);
   }
 }

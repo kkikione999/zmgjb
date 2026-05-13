@@ -9,9 +9,267 @@ extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim3;
 extern osMessageQueueId_t pidUpdateQueueHandle;
+extern CascadedPIDParams g_runtime_pid;
 
 int16_t STM32pause_count=10;
 
+
+// USART1 中断接收电机测试命令相关变量
+static uint8_t rx1_byte;           // 单字节缓冲，中断RX用
+static char rx1_buf[128];          // 行缓冲
+static uint16_t rx1_idx = 0;       // 当前行缓冲写入位置
+
+#define MOTOR_PWM_MAX 999          // 测试阶段用满量程(ARR=999)
+volatile uint8_t g_motor_test_active = 0;  // 1=电机测试模式，maneuver_task跳过PWM
+
+// 电机PWM控制辅助函数
+static void set_motor_pwm(int motor_id, uint16_t pwm)
+{
+    // 先全部置0，再设置指定电机
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, 0);  // M1
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);  // M2
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);  // M3
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0);  // M4
+
+    if (pwm > MOTOR_PWM_MAX) pwm = MOTOR_PWM_MAX;
+
+    switch (motor_id) {
+        case 1: __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, pwm); break;  // M1 前左
+        case 2: __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pwm); break;  // M2 前右
+        case 3: __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm); break;  // M3 后右
+        case 4: __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pwm); break;  // M4 后左
+        default: break;
+    }
+}
+
+static void set_all_motors_pwm(uint16_t pwm)
+{
+    if (pwm > MOTOR_PWM_MAX) pwm = MOTOR_PWM_MAX;
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, pwm);  // M1
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pwm);  // M2
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm);  // M3
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pwm);  // M4
+}
+
+static void stop_all_motors(void)
+{
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, 0);  // M1
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);  // M2
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);  // M3
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0);  // M4
+}
+
+// 电机测试命令解析器（前向声明在下方由usart1_rx_byte_handler调用）
+static void parse_motor_cmd(const char* cmd)
+{
+    int val;
+
+    // 非 motor 类命令不激活电机测试模式
+    if (strncmp(cmd, "att", 3) == 0 ||
+        strncmp(cmd, "pid", 3) == 0 ||
+        strncmp(cmd, "rc ", 3) == 0 ||
+        strncmp(cmd, "motors", 6) == 0) {
+        // 这些命令不触发电机测试模式
+    } else {
+        g_motor_test_active = 1;
+    }
+
+    // m1~m4: 单电机控制
+    if (strncmp(cmd, "m1 ", 3) == 0) {
+        if (sscanf(cmd + 3, "%d", &val) == 1) {
+            if (val < 0) val = 0;
+            if (val > MOTOR_PWM_MAX) val = MOTOR_PWM_MAX;
+            set_motor_pwm(1, (uint16_t)val);
+            printf("[MOTOR] M1 PWM=%d\r\n", val);
+        }
+    }
+    else if (strncmp(cmd, "m2 ", 3) == 0) {
+        if (sscanf(cmd + 3, "%d", &val) == 1) {
+            if (val < 0) val = 0;
+            if (val > MOTOR_PWM_MAX) val = MOTOR_PWM_MAX;
+            set_motor_pwm(2, (uint16_t)val);
+            printf("[MOTOR] M2 PWM=%d\r\n", val);
+        }
+    }
+    else if (strncmp(cmd, "m3 ", 3) == 0) {
+        if (sscanf(cmd + 3, "%d", &val) == 1) {
+            if (val < 0) val = 0;
+            if (val > MOTOR_PWM_MAX) val = MOTOR_PWM_MAX;
+            set_motor_pwm(3, (uint16_t)val);
+            printf("[MOTOR] M3 PWM=%d\r\n", val);
+        }
+    }
+    else if (strncmp(cmd, "m4 ", 3) == 0) {
+        if (sscanf(cmd + 3, "%d", &val) == 1) {
+            if (val < 0) val = 0;
+            if (val > MOTOR_PWM_MAX) val = MOTOR_PWM_MAX;
+            set_motor_pwm(4, (uint16_t)val);
+            printf("[MOTOR] M4 PWM=%d\r\n", val);
+        }
+    }
+    // all: 全部电机同速
+    else if (strncmp(cmd, "all ", 4) == 0) {
+        if (sscanf(cmd + 4, "%d", &val) == 1) {
+            if (val < 0) val = 0;
+            if (val > MOTOR_PWM_MAX) val = MOTOR_PWM_MAX;
+            set_all_motors_pwm((uint16_t)val);
+            printf("[MOTOR] ALL PWM=%d\r\n", val);
+        }
+    }
+    // stop: 紧急停机
+    else if (strcmp(cmd, "stop") == 0) {
+        stop_all_motors();
+        g_motor_test_active = 0;
+        printf("[MOTOR] STOP\r\n");
+    }
+    // mix: X型混控测试（整数参数，内部转浮点）
+    else if (strncmp(cmd, "mix ", 4) == 0) {
+        int it, ir, ip, iy;
+        if (sscanf(cmd + 4, "%d %d %d %d", &it, &ir, &ip, &iy) == 4) {
+            float ft = it / 100.0f;
+            float fr = ir / 100.0f;
+            float fp = ip / 100.0f;
+            float fy = iy / 100.0f;
+
+            float m1 = ft + fp + fr + fy;
+            float m2 = ft + fp - fr - fy;
+            float m3 = ft - fp - fr + fy;
+            float m4 = ft - fp + fr - fy;
+
+            if (m1 < 0) m1 = 0; if (m1 > 1) m1 = 1;
+            if (m2 < 0) m2 = 0; if (m2 > 1) m2 = 1;
+            if (m3 < 0) m3 = 0; if (m3 > 1) m3 = 1;
+            if (m4 < 0) m4 = 0; if (m4 > 1) m4 = 1;
+
+            uint16_t pwm1 = (uint16_t)(m1 * MOTOR_PWM_MAX);
+            uint16_t pwm2 = (uint16_t)(m2 * MOTOR_PWM_MAX);
+            uint16_t pwm3 = (uint16_t)(m3 * MOTOR_PWM_MAX);
+            uint16_t pwm4 = (uint16_t)(m4 * MOTOR_PWM_MAX);
+
+            __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, pwm1);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pwm2);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm3);
+            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pwm4);
+
+            printf("[MOTOR] MIX T=%d R=%d P=%d Y=%d -> M1=%d M2=%d M3=%d M4=%d\r\n",
+                   it, ir, ip, iy, pwm1, pwm2, pwm3, pwm4);
+        }
+    }
+    // sweep: 由Python端实现，STM32端忽略
+    else if (strncmp(cmd, "sweep", 5) == 0) {
+        printf("[MOTOR] sweep: handled by Python side\r\n");
+    }
+    // att: 打印当前姿态
+    else if (strncmp(cmd, "att", 3) == 0) {
+        attitude_data_t att;
+        __disable_irq();
+        att = g_attitude;
+        __enable_irq();
+        printf("Euler: %.2f, %.2f, %.2f  Gyro: %.2f, %.2f, %.2f\r\n",
+               att.euler[0], att.euler[1], att.euler[2],
+               att.gyro_dps[0], att.gyro_dps[1], att.gyro_dps[2]);
+    }
+    // pid: 打印当前PID参数
+    else if (strncmp(cmd, "pid", 3) == 0 && cmd[3] != 'r' && cmd[3] != 'a') {
+        printf("Roll  Ang(%.3f,%.3f,%.3f) Rate(%.3f,%.3f,%.3f)\r\n",
+               g_runtime_pid.roll.kp_angle, g_runtime_pid.roll.ki_angle, g_runtime_pid.roll.kd_angle,
+               g_runtime_pid.roll.kp_rate, g_runtime_pid.roll.ki_rate, g_runtime_pid.roll.kd_rate);
+        printf("Pitch Ang(%.3f,%.3f,%.3f) Rate(%.3f,%.3f,%.3f)\r\n",
+               g_runtime_pid.pitch.kp_angle, g_runtime_pid.pitch.ki_angle, g_runtime_pid.pitch.kd_angle,
+               g_runtime_pid.pitch.kp_rate, g_runtime_pid.pitch.ki_rate, g_runtime_pid.pitch.kd_rate);
+        printf("Yaw   Ang(%.3f,%.3f,%.3f) Rate(%.3f,%.3f,%.3f)\r\n",
+               g_runtime_pid.yaw.kp_angle, g_runtime_pid.yaw.ki_angle, g_runtime_pid.yaw.kd_angle,
+               g_runtime_pid.yaw.kp_rate, g_runtime_pid.yaw.ki_rate, g_runtime_pid.yaw.kd_rate);
+    }
+    // pidr <axis> <kp> <ki> <kd>: 修改角速度环参数（整数÷100得float）
+    else if (strncmp(cmd, "pidr ", 5) == 0) {
+        int axis, ikp, iki, ikd;
+        if (sscanf(cmd + 5, "%d %d %d %d", &axis, &ikp, &iki, &ikd) == 4) {
+            float kp = ikp / 100.0f;
+            float ki = iki / 100.0f;
+            float kd = ikd / 100.0f;
+            if (axis == 0) { g_runtime_pid.roll.kp_rate = kp; g_runtime_pid.roll.ki_rate = ki; g_runtime_pid.roll.kd_rate = kd; }
+            else if (axis == 1) { g_runtime_pid.pitch.kp_rate = kp; g_runtime_pid.pitch.ki_rate = ki; g_runtime_pid.pitch.kd_rate = kd; }
+            else if (axis == 2) { g_runtime_pid.yaw.kp_rate = kp; g_runtime_pid.yaw.ki_rate = ki; g_runtime_pid.yaw.kd_rate = kd; }
+            else { printf("axis must be 0/1/2\r\n"); return; }
+            printf("pidr axis=%d: %.3f,%.3f,%.3f\r\n", axis, kp, ki, kd);
+        } else {
+            printf("Usage: pidr <axis 0-2> <kp_x100> <ki_x100> <kd_x100>\r\n");
+        }
+    }
+    // pida <axis> <kp> <ki> <kd>: 修改角度环参数（整数÷100得float）
+    else if (strncmp(cmd, "pida ", 5) == 0) {
+        int axis, ikp, iki, ikd;
+        if (sscanf(cmd + 5, "%d %d %d %d", &axis, &ikp, &iki, &ikd) == 4) {
+            float kp = ikp / 100.0f;
+            float ki = iki / 100.0f;
+            float kd = ikd / 100.0f;
+            if (axis == 0) { g_runtime_pid.roll.kp_angle = kp; g_runtime_pid.roll.ki_angle = ki; g_runtime_pid.roll.kd_angle = kd; }
+            else if (axis == 1) { g_runtime_pid.pitch.kp_angle = kp; g_runtime_pid.pitch.ki_angle = ki; g_runtime_pid.pitch.kd_angle = kd; }
+            else if (axis == 2) { g_runtime_pid.yaw.kp_angle = kp; g_runtime_pid.yaw.ki_angle = ki; g_runtime_pid.yaw.kd_angle = kd; }
+            else { printf("axis must be 0/1/2\r\n"); return; }
+            printf("pida axis=%d: %.3f,%.3f,%.3f\r\n", axis, kp, ki, kd);
+        } else {
+            printf("Usage: pida <axis 0-2> <kp_x100> <ki_x100> <kd_x100>\r\n");
+        }
+    }
+    // pidrst: 重置PID状态（清除积分项）
+    else if (strncmp(cmd, "pidrst", 6) == 0) {
+        extern AxisCascadedState_t g_pid_state;
+        AxisCascadedState_Reset(&g_pid_state);
+        printf("PID state reset\r\n");
+    }
+    // rc <throttle_x100> <roll_x100> <pitch_x100> <yaw_x100> — 注入虚拟RC指令
+    // 例: rc 30 0 0 0 → throttle=0.30, roll=0, pitch=0, yaw=0
+    else if (strncmp(cmd, "rc ", 3) == 0) {
+        int it, ir, ip, iy;
+        if (sscanf(cmd + 3, "%d %d %d %d", &it, &ir, &ip, &iy) == 4) {
+            extern osMessageQueueId_t rcCmdQueueHandle;
+            rc_cmd_t rc = {
+                .throttle = it / 100.0f,
+                .roll     = ir / 100.0f,
+                .pitch    = ip / 100.0f,
+                .yaw      = iy / 100.0f,
+                .tick     = HAL_GetTick()
+            };
+            osMessageQueuePut(rcCmdQueueHandle, &rc, 0, 0);
+            printf("RC: T=%.2f R=%.2f P=%.2f Y=%.2f\r\n",
+                   rc.throttle, rc.roll, rc.pitch, rc.yaw);
+        } else {
+            printf("Usage: rc <T_x100> <R_x100> <P_x100> <Y_x100>\r\n");
+        }
+    }
+    // motors — 读取4个电机当前 PWM 输出值
+    else if (strncmp(cmd, "motors", 6) == 0) {
+        uint16_t m1 = __HAL_TIM_GET_COMPARE(&htim3, TIM_CHANNEL_4);
+        uint16_t m2 = __HAL_TIM_GET_COMPARE(&htim1, TIM_CHANNEL_4);
+        uint16_t m3 = __HAL_TIM_GET_COMPARE(&htim1, TIM_CHANNEL_1);
+        uint16_t m4 = __HAL_TIM_GET_COMPARE(&htim2, TIM_CHANNEL_3);
+        printf("PWM: M1=%u M2=%u M3=%u M4=%u\r\n", m1, m2, m3, m4);
+    }
+    else {
+        printf("[MOTOR] unknown cmd: %s\r\n", cmd);
+    }
+}
+
+// USART1 中断接收字节处理（从dma.c的HAL_UART_RxCpltCallback调用）
+void usart1_rx_byte_handler(void)
+{
+    if (rx1_byte == '\n' || rx1_byte == '\r') {
+        rx1_buf[rx1_idx] = '\0';
+        if (rx1_idx > 0) {
+            parse_motor_cmd(rx1_buf);
+        }
+        rx1_idx = 0;
+    } else {
+        if (rx1_idx < 127) {
+            rx1_buf[rx1_idx++] = (char)rx1_byte;
+        } else {
+            rx1_idx = 0;  // overflow protection
+        }
+    }
+    HAL_UART_Receive_IT(&huart1, &rx1_byte, 1);
+}
 
 // Printf DMA 缓冲区相关变量
 static char printf_bufA[256], printf_bufB[256];  // 双缓冲区
@@ -61,7 +319,7 @@ void MX_USART1_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
-
+  HAL_UART_Receive_IT(&huart1, &rx1_byte, 1);
   /* USER CODE END USART1_Init 2 */
 
 }

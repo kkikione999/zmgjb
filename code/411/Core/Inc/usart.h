@@ -105,6 +105,13 @@ typedef struct {
 
 extern rx_dbl_buf_t s_db[2];
 
+// PID 闭环姿态数据共享
+typedef struct {
+    float euler[3];      // [roll, pitch, yaw] 度
+    float gyro_dps[3];   // [gx, gy, gz] deg/s — roll=X, pitch=Y, yaw=Z
+} attitude_data_t;
+
+extern volatile attitude_data_t g_attitude;
 
 /* USER CODE END Private defines */
 
@@ -112,6 +119,7 @@ void MX_USART1_UART_Init(void);
 void MX_USART2_UART_Init(void);
 
 /* USER CODE BEGIN Prototypes */
+void usart1_rx_byte_handler(void);
 void imu_send_euler_dma(float roll_deg, float pitch_deg, float yaw_deg);
 void imu_send_Quaternion_to_ESP(float q1, float q2, float q3, float q4);
 void g_tx_enqueue_raw(uint8_t cmd, uint8_t* data, uint8_t len);

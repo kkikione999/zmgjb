@@ -134,6 +134,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart == &huart2) {}
     //dmarx_done_isr();
+
+    // USART1 中断接收：电机测试命令
+    if (huart->Instance == USART1) {
+        usart1_rx_byte_handler();
+    }
 }
 
 /* USER CODE END 2 */

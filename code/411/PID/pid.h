@@ -68,4 +68,46 @@ typedef struct
 void axisPID_to_bank_slot(float *slot, const AxisPID *pid);
 void bank_to_axisPID(int bank_idx, AxisPID *pid);
 void PID_LoadFromParams(void);
+
+// PID 运行时状态（每个 PID 实例一个）
+typedef struct {
+    float integral;          // 积分累积
+    float prev_error;        // 上次误差
+    float prev_derivative;   // 上次微分项（低通滤波后）
+    float output;            // 当前输出
+} PID_State_t;
+
+// 单轴级联 PID 状态（角度环 + 角速度环）
+typedef struct {
+    PID_State_t angle;
+    PID_State_t rate;
+} CascadedState_t;
+
+// 三轴级联 PID 状态
+typedef struct {
+    CascadedState_t roll;
+    CascadedState_t pitch;
+    CascadedState_t yaw;
+} AxisCascadedState_t;
+
+// 单环 PID 计算
+float PID_Calculate(PID_State_t *s,
+                    float kp, float ki, float kd,
+                    float setpoint, float measurement,
+                    float dt,
+                    float out_min, float out_max,
+                    float d_alpha);
+
+// 级联 PID（角度外环 + 角速度内环）
+float PID_Cascaded(CascadedState_t *cs,
+                   const AxisPID *params,
+                   float angle_sp, float angle_meas, float rate_meas,
+                   float dt,
+                   float rate_out_min, float rate_out_max);
+
+// 重置 PID 状态
+void PID_State_Reset(PID_State_t *s);
+void CascadedState_Reset(CascadedState_t *cs);
+void AxisCascadedState_Reset(AxisCascadedState_t *state);
+
 #endif
