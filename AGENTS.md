@@ -5,12 +5,12 @@
 - this computer with a mac M4 chip, is connected with WiFi and a Router which shares the network by it's WiFi: SSID is "whc" and Password is "12345678"
 
 ## Rules
-- the pinouts of components connection is absolutely correct and don't doubt that, if something wrong, it must be code rather than drone.
+- the pinouts of components connection is absolutely correct and don't doubt that, if something wrong, it must be your code rather than drone.
+- don't guess, don't ask user, everything you need is under current document.
 
 ## Project Structure & Module Organization
 - `code/411`: STM32F411 flight-controller firmware. Core CubeMX/HAL code lives in `Core/`, sensors and board drivers in `Hardware/`, attitude/control logic in `Control/`, PID code in `PID/`, and persistent parameters in `system_param/`.
-- `code/C3`: ESP32-C3 bridge and UI firmware. Runtime code is in `src/`, web assets for SPIFFS are in `data/`, and PlatformIO test scaffolding is in `test/`.
-- `hardware/原理图` and `hardware/芯片手册`: schematics and reference manuals for bring-up and debugging.
+- `code/C3`: you don't need to care about that, only care about STM32.
 
 ## Build, Test, and Development Commands
 - `cd code/411 && pio run`: build STM32 firmware.
