@@ -1,4 +1,5 @@
 # CLAUDE.md
+#
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -39,7 +40,7 @@ pio device monitor -b 115200  # serial monitor
 - `sensor_task` — reads IMU/mag/baro, filters, pushes to `sensorQueueHandle`
 - `posture_task` — pulls sensor data, runs Mahony AHRS (`mahony_ahrs_update_mag`)
 - `esp32_rx_task` — USART2 DMA circular RX, frame parser (HEADER+CMD+LEN+DATA+SUM+TAIL), dispatches via `cmd_table`
-- `maneuver_task` — reads `rcCmdQueueHandle`, X-frame mixing, writes PWM (direct RC → motor, no PID loop yet)
+- `maneuver_task` — reads `rcCmdQueueHandle`, X-frame mixing, writes PWM (direct RC → motor, no PID loop yet
 
 **Defined but not started**: `esp32_tx_task`, `pid_update_task`
 
@@ -51,13 +52,14 @@ pio device monitor -b 115200  # serial monitor
 - USART1 (STM32 ↔ Computer): 460800 baud, DMA TX for VOFA+ debug output
 - Protocol frame: `HEADER + CMD + LEN + DATA + SUM + TAIL`
 - ESP32 bridges STM32 to WiFi: web UI control, VOFA+ telemetry, joystick input
+- Serial bridge to STM32 via UART
 
 ### Sensors
 | Sensor | Bus | File | Config |
 |--------|-----|------|--------|
-| ICM-42688-P (IMU) | SPI3 | `Hardware/ICM42688.c` | gyro/accel 1kHz, ±2000dps/±8g |
+| ICM-42688-P (IMU) | I2C1 | `Hardware/ICM42688.c` | gyro/accel 1kHz, ±2000dps/±8g |
 | QMC5883P (magnetometer) | I2C1 | `Hardware/QMC5883P.c` | — |
-| LPS22HBTR (barometer) | I2C1 | `Hardware/LPS22HBTR.c` | — |
+| LPS22HBTR/LPS22HH (barometer) | SPI3 | `Hardware/LPS22HBTR.c` | WHO_AM_I=0xB1(LPS22HB)/0xB3(LPS22HH) |
 
 ### Motor Output
 - TIM1 CH1-4 PWM drives 4 coreless motors via X-frame mixing
@@ -98,8 +100,6 @@ code/C3/
 1. `411/Core/Src/main.c` — startup and peripheral init
 2. `411/Core/Src/freertos.c` — all task definitions, queues, and RTOS setup
 3. `411/Core/Src/usart.c` — DMA RX/TX, frame protocol, joystick parsing, PID parameter commands
-4. `411/Control/AHRS_Mahony.c` — attitude estimation
-5. `411/Hardware/ICM42688.c` — IMU driver
 
 ## Network Config
 
@@ -112,7 +112,6 @@ code/C3/
 - Module prefixes: `mahony_`, `system_params_`, `QMC_`, `ICM42688_`, `Baro_`
 - Task names: `xxx_task` pattern
 - Macros: `UPPER_SNAKE_CASE`
-- New filenames: lowercase with underscores
 
 ## Debugging Notes
 
@@ -123,13 +122,16 @@ code/C3/
 
 ## Gotchas
 
-- `411/src/` and `411/Core/Src/` contain symlinks (`Control/`, `Hardware/`, `PID/`, `system_param/`) for PlatformIO build — edit source files in the top-level module directories
-- CubeMX project file: `411/Flyer_v1.1.0.ioc` — use STM32CubeMX to regenerate HAL code
-- PlatformIO uses `-mfloat-abi=softfp`, Makefile uses hard float — binaries from the two build systems are incompatible
-- C3 deps: ArduinoJson 7.x, ESPAsyncWebServer 3.x, AsyncTCP 3.x (managed via `lib_deps`)
-
 ## Reference Documents
 
-- Chip datasheets and reference manuals: `../hardware/芯片手册/`
-- Schematics: `../hardware/原理图/`
-- STM32 runtime overview: `../docs/stm32_runtime_overview.md`
+- 芯片手册和原理图: `../hardware/芯片手册/`
+- 原理图: `../hardware/原理图/`
+
+## Serial Monitor
+
+**推荐用法：**
+```bash
+411/scripts/flash_monitor.sh        # 编译+烧录+串口输出，一步到位
+```
+
+该脚本将编译、烧录、复位MCU和串口捕获整合为一步，大幅简化调试流程。
