@@ -1,5 +1,114 @@
 # Change Log
 
+## 2026-05-14 — PID 代码审查 + 200Hz 内环升级
+
+### 代码审查发现并修复的问题
+
+#### 问题 2: `prev_error` 命名误导（pid.h / pid.c）
+- `PID_State_t.prev_error` 实际存储的是上一次 measurement，不是 error
+- 改名: `prev_error` → `prev_measurement`
+
+#### 问题 3: pid_update_task 延迟过大（freertos.c）
+- `pid_update_task` 循环底部 `osDelay(1000)` 导致每秒只能处理 1 条参数更新
+- 改为 `osDelay(10)`，快速调参时响应从 3s+ 降至 0.47s
+
+#### 问题 5: g_runtime_pid 无互斥保护（freertos.c）
+- `pid_update_task` 写、`maneuver_task` 读 `g_runtime_pid`（72 字节），无原子保护
+- 在 `maneuver_task` 中添加 `__disable_irq()` 原子拷贝到局部变量
+
+#### 问题 6: 首次运行微分尖峰（pid.h / pid.c）
+- PID 首次调用时 `prev_measurement=0`，如果初始测量值不为 0 会产生微分尖峰
+- `PID_State_t` 新增 `uint8_t initialized` 标志
+- `PID_Calculate()` 首次运行时初始化 measurement 并跳过 D 项
+- `PID_State_Reset()` 重置 `initialized=0`
+
+#### 问题 1（误报）: pitch 混控符号
+- 审查时怀疑 pitch 混控符号反了，但通过电机逐一测试确认 Mahony pitch 正方向（抬头为正）与混控符号一致
+- **无需修改**
+
+### 200Hz 内环升级（方案 A：整体提速）
+
+#### 改动文件
+- `Core/Src/freertos.c`
+
+#### sensor_task 改动
+- 平均采样 3→1（`ICM_GET_Average_Raw_data` 参数从 3 改为 1）
+- 定时: `osDelay(18)` → `osDelayUntil` 5ms 周期 (200Hz)
+
+#### posture_task 改动
+- Mahony 采样周期: `mahony_set_sample_period(0.02f)` → `0.005f`
+- 定时: `osDelay(20)` → `osDelayUntil` 5ms 周期 (200Hz)
+
+#### maneuver_task 重写（核心改动）
+- 内环角速度 PID: 50Hz → **200Hz** (`RATE_DT=0.005f`)
+- 外环角度 PID: 保持 **50Hz** (`ANGLE_DT=0.02f`，每 4 个内环周期运行 1 次)
+- 不再使用 `PID_Cascaded()`，改为分别调用 `PID_Calculate()` 传入不同 dt
+- 外环输出的 rate setpoint 用 static 变量在调用间保持（零阶保持）
+- 姿态熔断计数: `FUSE_COUNT_LIMIT` 50→200（适配 200Hz，仍为 1s）
+- 电机测试模式定时: `osDelay(20)` → `osDelayUntil` 5ms
+- 栈空间: 512×4 → 640×4（新增局部变量）
+
+#### CPU 负载估算
+| 任务 | 频率 | 每次耗时 | CPU 占用 |
+|------|------|----------|----------|
+| sensor_task | 200Hz | ~2ms | 40% |
+| posture_task | 200Hz | ~0.3ms | 6% |
+| maneuver_task | 200Hz | ~0.1ms | 2% |
+| 其他 | — | — | ~5% |
+| 合计 | | | **~53%** |
+
+### 验证结果
+- 编译通过: RAM 41.0%, Flash 12.9%
+- 串口命令正常: `att`、`pid`、`pidr`、`pidrst`、`m1-m4`、`stop`
+- PID 参数在线更新正常: 3 条命令 0.47s 完成
+- 姿态数据正常: Euler 角和陀螺仪数据合理
+
+## 2026-05-14 — 阶段 3：Roll 单轴 PID 调参
+
+### 前期飞行测试结论
+- 多次三轴同时调参失败（Roll/Pitch/Yaw 互相干扰，无法定位各轴问题）
+- 悬停油门约 42-43%（PWM ~420/999）
+- CG 偏右后，导致飞行时 Pitch 持续偏正（+13-15°），Roll 偏右（+5.8°）
+- 50Hz 控制率是根本瓶颈，无法抑制 >12.5Hz 振荡
+- **结论**: 改为单轴逐个调试方法
+
+### 代码改动（飞行调试期间）
+- `freertos.c`:
+  - `PID_RATE_OUT_MAX` 从 150 降至 80（防止单电机修正溢出）
+  - RC 超时从 200ms 改为 5000ms
+  - 新增熔断保护：姿态角 >45° 持续 1s 自动归零油门
+  - 新增 `#include <math.h>` 用于 fabsf
+- `usart.c`: att 输出格式改为 `Euler: Roll, Pitch, Yaw  Gyro: gx, gy, gz`
+
+### Roll 单轴调参（无人机固定在 Roll 轴方向）
+#### Step 1: 方向验证 — PASS
+- 方法：只开 Roll rate Kp=0.30，给 50% 油门，手动倾斜
+- 结果：**方向正确**
+  - 向右倾斜（右边低）→ 右侧电机(M2+M3)加速 → 推右侧上去 → 修正倾斜 ✓
+  - 向左倾斜（左边低）→ 左侧电机(M1+M4)加速 → 推左侧上去 → 修正倾斜 ✓
+- **不需要修改混控公式**
+
+#### Step 2: Rate Kp 扫描（初步，角度环 Kp=2.0, RC: 50%油门 10%Roll）
+| Kp_rate | avg_diff | max|diff| | 评级 |
+|---------|----------|-----------|------|
+| 0.10    | +1.6     | 16        | 弱   |
+| 0.15    | +6.0     | 16        | 弱   |
+| 0.20    | +9.6     | 20        | 弱   |
+| 0.25    | +14.8    | 32        | 中   |
+| 0.30    | +25.2    | 52        | 中   |
+| 0.40    | +32.0    | 56        | 中   |
+| 0.50    | +42.4    | 68        | 中   |
+| 0.60    | +35.2    | 76        | 中   |
+| 0.80    | -25.6    | 228       | 强(振荡) |
+
+- Kp=0.80 出现大幅振荡（max|diff|=228，方向反转），说明振荡点在 0.60-0.80 之间
+- **待继续**: 需要更精细扫描 0.60-0.80 区间，以及验证这些值在实际飞行中的表现
+
+### 新增脚本
+- `scripts/roll_tune.py` — Roll 单轴交互式调参工具
+- `scripts/roll_dir_test.py` — Roll 方向自动验证脚本
+- `scripts/roll_kp_scan.py` — Rate Kp 自动扫描脚本
+
 ## 2026-05-14 — 阶段 2：PID 计算引擎 + 级联控制闭环
 
 ### 阶段 1（电机标定）结果

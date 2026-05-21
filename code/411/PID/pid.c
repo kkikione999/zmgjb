@@ -43,6 +43,20 @@ float PID_Calculate(PID_State_t *s,
                     float out_min, float out_max,
                     float d_alpha)
 {
+    // 首次运行：初始化测量值，避免微分尖峰
+    if (!s->initialized) {
+        s->prev_measurement = measurement;
+        s->prev_derivative = 0.0f;
+        s->initialized = 1;
+        // 仅 P 项，跳过 I 和 D
+        float error = setpoint - measurement;
+        float output = kp * error;
+        if (output > out_max) output = out_max;
+        if (output < out_min) output = out_min;
+        s->output = output;
+        return output;
+    }
+
     float error = setpoint - measurement;
 
     // P 项
@@ -53,10 +67,10 @@ float PID_Calculate(PID_State_t *s,
     float i_term = ki * s->integral;
 
     // D 项（对 measurement 微分，避免 setpoint 突变尖峰）
-    float raw_derivative = -(measurement - s->prev_error) / dt;
+    float raw_derivative = -(measurement - s->prev_measurement) / dt;
     // 一阶低通滤波
     float filtered_derivative = d_alpha * raw_derivative + (1.0f - d_alpha) * s->prev_derivative;
-    s->prev_error = measurement;
+    s->prev_measurement = measurement;
     s->prev_derivative = filtered_derivative;
     float d_term = kd * filtered_derivative;
 
@@ -105,8 +119,9 @@ float PID_Cascaded(CascadedState_t *cs,
 void PID_State_Reset(PID_State_t *s)
 {
     s->integral = 0.0f;
-    s->prev_error = 0.0f;
+    s->prev_measurement = 0.0f;
     s->prev_derivative = 0.0f;
+    s->initialized = 0;
     s->output = 0.0f;
 }
 

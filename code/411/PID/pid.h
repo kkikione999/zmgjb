@@ -72,8 +72,9 @@ void PID_LoadFromParams(void);
 // PID 运行时状态（每个 PID 实例一个）
 typedef struct {
     float integral;          // 积分累积
-    float prev_error;        // 上次误差
+    float prev_measurement;  // 上次测量值
     float prev_derivative;   // 上次微分项（低通滤波后）
+    uint8_t initialized;     // 首次运行标志
     float output;            // 当前输出
 } PID_State_t;
 

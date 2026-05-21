@@ -21,6 +21,7 @@
 #include "string.h"
 #include "stdio.h"
 #include "stdint.h"
+#include "math.h"
 #include "tim.h"
 /* USER CODE END Includes */
 
@@ -108,7 +109,7 @@ const osThreadAttr_t PID_Update_attributes = {
 osThreadId_t MANEUVERHandle;
 const osThreadAttr_t MANEUVER_attributes = {
   .name = "MANEUVER",
-  .stack_size = 512 * 4,              // 先给 2KB，后面再按水位调小
+  .stack_size = 640 * 4,              // 200Hz 内外环分频需要更多局部变量
   .priority = (osPriority_t)osPriorityAboveNormal,  // 控制输出建议略高于RX/PID保存
 };
 /* Private function prototypes -----------------------------------------------*/
@@ -282,7 +283,7 @@ void pid_update_task(void *argument)
         }
 	//printf("p\r\n");
 	//HAL_GPIO_TogglePin(GPIOB,GPIO_PIN_14);
-	osDelay(1000);
+	osDelay(10);
     }
 }
 /**
@@ -298,9 +299,10 @@ void posture_task(void *argument)
 	float roll, pitch, yaw;  // 欧拉角
 
 	printf("[POSTURE] Task started - AHRS enabled\r\n");
-	mahony_set_sample_period(0.02f);  // 匹配实际 50Hz 调用频率
+	mahony_set_sample_period(0.005f);  // 匹配实际 50Hz 调用频率
 
   /* Infinite loop */
+  uint32_t wake_time = osKernelGetTickCount();
   for(;;)
   {
 		// 从传感器队列获取滤波后的数据
@@ -339,8 +341,12 @@ void posture_task(void *argument)
 			g_attitude = g_attitude_data;
 			__enable_irq();
 
-			// 打印姿态角（可选择启用）
-			// printf("ATT:%.2f,%.2f,%.2f\r\n", roll, pitch, yaw); // 电机测试期间临时关闭
+			// 输出姿态数据用于数据采集
+			printf("ATT,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\r\n",
+			       roll, pitch, yaw,
+			       g_attitude_data.gyro_dps[0],
+			       g_attitude_data.gyro_dps[1],
+			       g_attitude_data.gyro_dps[2]);
 
 			// ========== 原有代码（已注释，可选择性启用）==========
 			#if 0
@@ -365,7 +371,8 @@ void posture_task(void *argument)
 			//g_tx_enqueue_raw(0x01, (uint8_t*)&quat, sizeof(quat));
 			#endif
 		}
-		osDelay(20);  // 50Hz发送率，适合VOFA+显示
+		wake_time += 5;  // 200Hz period
+		osDelayUntil(wake_time);
   }
   /* USER CODE END posture_task */
 }
@@ -408,11 +415,12 @@ void sensor_task(void *argument)
 	printf("[SENSOR] 加速度计滤波系数: %.2f\r\n", 0.5f);
 	printf("[SENSOR] 磁力计滤波系数: %.2f\r\n", 0.3f);
 	
+  uint32_t wake_time = osKernelGetTickCount();
   for(;;)
   {
 	// ========== 1. 读取ICM42688原始数据 ==========
-	// ICM_GET_Average_Raw_data已经做了3次采样平均，相当于硬件滤波
-	ICM_GET_Average_Raw_data(&icm_raw_data, 3); 
+	// ICM_GET_Average_Raw_data做了1次采样
+	ICM_GET_Average_Raw_data(&icm_raw_data, 1); 
 	
 	// ========== 2. 应用低通滤波 ==========
 	// 陀螺仪滤波
@@ -474,7 +482,8 @@ void sensor_task(void *argument)
     osMessageQueuePut(sensorQueueHandle, &sensor_packet, 0, 0);
     
     // ========== 6. 周期延时 ==========
-    osDelay(18); // 18ms = 55.5Hz更新率
+    wake_time += 5;  // 200Hz period
+    osDelayUntil(wake_time);
 	// printf("sensor_task\r\n");
   }
   /* USER CODE END sensor_task */
@@ -647,11 +656,26 @@ void maneuver_task(void *argument)
   rc_cmd_t rc = {0};
   uint32_t last_rc_tick = 0;
 
+  // 姿态熔断保护
+  #define FUSE_ANGLE_LIMIT  45.0f   // 超过此角度触发计数
+  #define FUSE_COUNT_LIMIT  200     // 持续 200 个周期 (1s@200Hz) 触发熔断
+  static int16_t fuse_count = 0;
+  static uint8_t fuse_tripped = 0;
+
   // PID 控制参数
   #define MAX_ANGLE   25.0f    // 摇杆满偏对应最大倾斜角（度）
   #define MAX_RATE    200.0f   // yaw 摇杆满偏对应最大偏航速率（度/秒）
-  #define PID_DT      0.02f   // 50Hz 控制周期
-  #define PID_RATE_OUT_MAX 300.0f  // 角速度环输出上限
+  #define ANGLE_DT    0.02f   // 外环 50Hz 控制周期
+  #define RATE_DT     0.005f  // 内环 200Hz 控制周期
+  #define PID_RATE_OUT_MAX 80.0f  // 角速度环输出上限
+
+  // 外环输出的 rate setpoint（在调用间保持）
+  float roll_rate_sp  = 0.0f;
+  float pitch_rate_sp = 0.0f;
+  float yaw_rate_sp   = 0.0f;
+
+  uint32_t cycle_count = 0;
+  uint32_t wake_time = osKernelGetTickCount();
 
   for (;;)
   {
@@ -664,7 +688,7 @@ void maneuver_task(void *argument)
 
     // 2) 遥控失联保护
     uint32_t now = HAL_GetTick();
-    if ((now - last_rc_tick) > 200) {  // 恢复200ms超时
+    if ((now - last_rc_tick) > 5000) {
       rc.throttle = 0.0f;
       rc.roll = rc.pitch = rc.yaw = 0.0f;
     }
@@ -672,7 +696,8 @@ void maneuver_task(void *argument)
     // 3) 电机测试模式下跳过 PID 控制
     extern volatile uint8_t g_motor_test_active;
     if (g_motor_test_active) {
-        osDelay(20);
+        wake_time += 5;
+        osDelayUntil(wake_time);
         continue;
     }
 
@@ -683,56 +708,109 @@ void maneuver_task(void *argument)
     __enable_irq();
 
     // 5) RC 命令映射为目标值
-    float roll_angle_sp  = rc.roll  * MAX_ANGLE;   // ±25°
-    float pitch_angle_sp = rc.pitch * MAX_ANGLE;   // ±25°
-    float yaw_rate_sp    = rc.yaw   * MAX_RATE;    // ±200°/s
+    float roll_angle_sp  = rc.roll  * MAX_ANGLE;
+    float pitch_angle_sp = rc.pitch * MAX_ANGLE;
+    float yaw_rate_sp_rc = rc.yaw   * MAX_RATE;
 
-    // 6) 级联 PID 计算
-    // Roll: 角度外环 → 角速度内环
-    float roll_corr = PID_Cascaded(&g_pid_state.roll,
-                                    &g_runtime_pid.roll,
-                                    roll_angle_sp, att.euler[0], att.gyro_dps[0],
-                                    PID_DT, -PID_RATE_OUT_MAX, PID_RATE_OUT_MAX);
+    // 6) 外环角度 PID：每 4 个周期运行一次 (50Hz)
+    if ((cycle_count & 0x03) == 0) {
+        // 姿态熔断检查
+        if (fuse_tripped) {
+            if (rc.throttle <= 0.001f) {
+                fuse_tripped = 0;
+                fuse_count = 0;
+            }
+        } else {
+            if (fabsf(att.euler[0]) > FUSE_ANGLE_LIMIT || fabsf(att.euler[1]) > FUSE_ANGLE_LIMIT) {
+                fuse_count++;
+                if (fuse_count >= FUSE_COUNT_LIMIT) {
+                    fuse_tripped = 1;
+                }
+            } else {
+                fuse_count = 0;
+            }
+        }
 
-    // Pitch: 角度外环 → 角速度内环
-    float pitch_corr = PID_Cascaded(&g_pid_state.pitch,
-                                     &g_runtime_pid.pitch,
-                                     pitch_angle_sp, att.euler[1], att.gyro_dps[1],
-                                     PID_DT, -PID_RATE_OUT_MAX, PID_RATE_OUT_MAX);
+        if (fuse_tripped) {
+            rc.throttle = 0.0f;
+            rc.roll = rc.pitch = rc.yaw = 0.0f;
+            roll_angle_sp = pitch_angle_sp = 0.0f;
+            yaw_rate_sp_rc = 0.0f;
+        }
 
-    // Yaw: 仅角速度环（yaw 不做角度保持）
-    float yaw_corr = PID_Calculate(&g_pid_state.yaw.rate,
-                                    g_runtime_pid.yaw.kp_rate,
-                                    g_runtime_pid.yaw.ki_rate,
-                                    g_runtime_pid.yaw.kd_rate,
-                                    yaw_rate_sp, att.gyro_dps[2],
-                                    PID_DT,
-                                    -PID_RATE_OUT_MAX, PID_RATE_OUT_MAX,
-                                    0.5f);
+        // 原子拷贝 PID 参数
+        CascadedPIDParams pid;
+        __disable_irq();
+        pid = g_runtime_pid;
+        __enable_irq();
 
-    // 7) 油门基础值
+        // 外环角度 PID → 输出 rate setpoint
+        roll_rate_sp  = PID_Calculate(&g_pid_state.roll.angle,
+                                       pid.roll.kp_angle, pid.roll.ki_angle, pid.roll.kd_angle,
+                                       roll_angle_sp, att.euler[0],
+                                       ANGLE_DT,
+                                       -500.0f, 500.0f,
+                                       0.5f);
+        pitch_rate_sp = PID_Calculate(&g_pid_state.pitch.angle,
+                                       pid.pitch.kp_angle, pid.pitch.ki_angle, pid.pitch.kd_angle,
+                                       pitch_angle_sp, att.euler[1],
+                                       ANGLE_DT,
+                                       -500.0f, 500.0f,
+                                       0.5f);
+        yaw_rate_sp = yaw_rate_sp_rc;  // yaw 无角度环，直接用 RC 速率指令
+    }
+
+    // 7) 内环角速度 PID：每个周期运行 (200Hz)
+    // 原子拷贝 PID 参数
+    CascadedPIDParams pid;
+    __disable_irq();
+    pid = g_runtime_pid;
+    __enable_irq();
+
+    float roll_corr  = PID_Calculate(&g_pid_state.roll.rate,
+                                      pid.roll.kp_rate, pid.roll.ki_rate, pid.roll.kd_rate,
+                                      roll_rate_sp, att.gyro_dps[0],
+                                      RATE_DT,
+                                      -PID_RATE_OUT_MAX, PID_RATE_OUT_MAX,
+                                      0.5f);
+    float pitch_corr = PID_Calculate(&g_pid_state.pitch.rate,
+                                      pid.pitch.kp_rate, pid.pitch.ki_rate, pid.pitch.kd_rate,
+                                      pitch_rate_sp, att.gyro_dps[1],
+                                      RATE_DT,
+                                      -PID_RATE_OUT_MAX, PID_RATE_OUT_MAX,
+                                      0.5f);
+    float yaw_corr   = PID_Calculate(&g_pid_state.yaw.rate,
+                                      pid.yaw.kp_rate, pid.yaw.ki_rate, pid.yaw.kd_rate,
+                                      yaw_rate_sp, att.gyro_dps[2],
+                                      RATE_DT,
+                                      -PID_RATE_OUT_MAX, PID_RATE_OUT_MAX,
+                                      0.5f);
+
+    // 8) 油门基础值
     float T = rc.throttle * PWM_MAX;
 
-    // 8) X 型混控
-    float m1 = T + pitch_corr + roll_corr + yaw_corr;  // 前左
-    float m2 = T + pitch_corr - roll_corr - yaw_corr;  // 前右
-    float m3 = T - pitch_corr - roll_corr + yaw_corr;  // 后右
-    float m4 = T - pitch_corr + roll_corr - yaw_corr;  // 后左
+    // 9) X 型混控
+    float m1 = T + pitch_corr + roll_corr - yaw_corr;  // 前左
+    float m2 = T + pitch_corr - roll_corr + yaw_corr;  // 前右
+    float m3 = T - pitch_corr - roll_corr - yaw_corr;  // 后右
+    float m4 = T - pitch_corr + roll_corr + yaw_corr;  // 后左
 
-    // 9) 限幅
+    // 10) 限幅
     m1 = (m1 < 0) ? 0 : (m1 > PWM_MAX ? PWM_MAX : m1);
     m2 = (m2 < 0) ? 0 : (m2 > PWM_MAX ? PWM_MAX : m2);
     m3 = (m3 < 0) ? 0 : (m3 > PWM_MAX ? PWM_MAX : m3);
     m4 = (m4 < 0) ? 0 : (m4 > PWM_MAX ? PWM_MAX : m4);
 
-    // 10) 输出 PWM
+    // 11) 输出 PWM
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, (uint16_t)m1);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, (uint16_t)m2);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)m3);
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, (uint16_t)m4);
 
-    // 11) 控制周期 50Hz
-    osDelay(20);
+    // 12) 控制周期 200Hz
+    cycle_count++;
+    wake_time += 5;
+    osDelayUntil(wake_time);
   }
 }
 /* USER CODE END Application */
